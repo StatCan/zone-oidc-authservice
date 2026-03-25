@@ -7,8 +7,9 @@ else
 GIT_VERSION := $(shell git describe --tags --long --always)-dirty-$(shell git diff | shasum -a256 | cut -c -6)
 endif
 
-IMG ?= gcr.io/arrikto-playground/kubeflow/oidc-authservice
-TAG ?= $(GIT_VERSION)
+IMG ?= k8scc01covidacr.azurecr.io/oidc-authservice
+# TAG ?= $(GIT_VERSION)
+TAG ?= zone
 
 .EXPORT_ALL_VARIABLES:
 DOCKER_BUILDKIT := 1

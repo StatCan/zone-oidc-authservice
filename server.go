@@ -314,7 +314,7 @@ func (s *server) authCodeFlowAuthenticationRequest(w http.ResponseWriter, r *htt
 		common.ReturnMessage(w, http.StatusInternalServerError, "Failed to save state in store.")
 		return
 	}
-
+	logger.Printf("TEST: authcodeflowrequest url is %s", s.oauth2Config.AuthCodeURL(state))
 	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(state), http.StatusFound)
 }
 
@@ -381,6 +381,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	claims := map[string]interface{}{}
 
 	newTokens, _, err := oidc.TokenSource(ctx, s.oauth2Config, oauth2Tokens)
+	logger.Printf("TEST: newtokens is %+v, id token is %+v", newTokens, rawIDToken)
 	userInfo, err := oidc.GetUserInfo(ctx, s.provider, newTokens)
 	if err != nil {
 		logger.Errorf("Not able to fetch userinfo: %v", err)

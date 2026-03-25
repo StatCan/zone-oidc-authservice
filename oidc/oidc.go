@@ -72,7 +72,7 @@ func (u *UserInfo) Claims(v interface{}) error {
 // ParseUserInfo unmarshals the response of the UserInfo endpoint
 // and enforces boolean value for the EmailVerified claim.
 func ParseUserInfo(body []byte) (*UserInfo, error) {
-
+	log := common.StandardLogger()
 	raw := struct {
 		Subject       string      `json:"sub"`
 		Profile       string      `json:"profile"`
@@ -85,7 +85,7 @@ func ParseUserInfo(body []byte) (*UserInfo, error) {
 	if err != nil {
 		return nil, errors.Errorf("oidc: fail to decode userinfo: %v", err)
 	}
-
+	log.Printf("TEST: rawuser is %+v", raw)
 	userInfo := &UserInfo{
 		Subject: raw.Subject,
 		Profile: raw.Profile,
@@ -138,7 +138,7 @@ func TokenSource(ctx context.Context, config *oauth2.Config,
 //
 // [1]: https://github.com/coreos/go-oidc/blob/v2.1.0/oidc.go#L180
 func GetUserInfo(ctx context.Context, provider Provider, token *oauth2.Token) (*UserInfo, error) {
-
+	log := common.StandardLogger()
 	discoveryClaims := &struct {
 		UserInfoURL string `json:"userinfo_endpoint"`
 	}{}
@@ -146,16 +146,19 @@ func GetUserInfo(ctx context.Context, provider Provider, token *oauth2.Token) (*
 		return nil, errors.Errorf("Error unmarshalling OIDC discovery document claims: %v", err)
 	}
 
-	userInfoURL := discoveryClaims.UserInfoURL
-	if userInfoURL == "" {
-		return nil, errors.New("oidc: user info endpoint is not supported by this provider")
-	}
+	// userInfoURL := discoveryClaims.UserInfoURL
+	// if userInfoURL == "" {
+	// 	return nil, errors.New("oidc: user info endpoint is not supported by this provider")
+	// }
 
+	userInfoURL := "https://graph.microsoft.com/v1.0/me"
+
+	log.Printf("TEST: UserInfoURL is %s", userInfoURL)
 	req, err := http.NewRequest("GET", userInfoURL, nil)
 	if err != nil {
 		return nil, errors.Errorf("oidc: create GET request: %v", err)
 	}
-
+	log.Printf("TEST: req is %+v", req)
 	token.SetAuthHeader(req)
 
 	resp, err := common.DoRequest(ctx, req)
@@ -175,7 +178,7 @@ func GetUserInfo(ctx context.Context, provider Provider, token *oauth2.Token) (*
 			Err:      errors.Errorf("oidc: Calling UserInfo endpoint failed. body: %s", body),
 		}
 	}
-
+	log.Printf("TEST: body is %+v, or as a string its %s", body, string(body))
 	userInfo, err := ParseUserInfo(body)
 
 	if err != nil {
