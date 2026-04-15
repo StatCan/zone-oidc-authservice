@@ -53,6 +53,7 @@ func main() {
 	router := mux.NewRouter()
 	router.HandleFunc(c.RedirectURL.Path, s.callback).Methods(http.MethodGet)
 	router.HandleFunc(path.Join(c.AuthserviceURLPrefix.Path, SessionLogoutPath), s.logout).Methods(http.MethodPost)
+	router.HandleFunc("/authservice/getToken", s.getToken).Methods(http.MethodGet)
 
 	router.PathPrefix(c.VerifyAuthURL.Path).Handler(s.whitelistMiddleware(c.SkipAuthURLs, isReady, true)(http.HandlerFunc(s.authenticate_no_login))).Methods(http.MethodGet)
 	router.PathPrefix("/").Handler(s.whitelistMiddleware(c.SkipAuthURLs, isReady, false)(http.HandlerFunc(s.authenticate_or_login)))
@@ -113,7 +114,7 @@ func main() {
 		log.Fatalf("Error getting K8s config: %v", err)
 	} else if err != nil {
 		// If Kubernetes authenticator is disabled, ignore the error.
-		log.Debugf("Error getting K8s config: %v. " +
+		log.Debugf("Error getting K8s config: %v. "+
 			"Kubernetes authenticator is disabled, skipping ...", err)
 	} else {
 		k8sAuthenticator, err = authenticators.NewKubernetesAuthenticator(
@@ -122,7 +123,7 @@ func main() {
 			log.Fatalf("Error creating K8s authenticator: %v", err)
 		} else if err != nil {
 			// If Kubernetes authenticator is disabled, ignore the error.
-			log.Debugf("Error creating K8s authenticator:: %v. " +
+			log.Debugf("Error creating K8s authenticator:: %v. "+
 				"Kubernetes authenticator is disabled, skipping ...", err)
 		}
 	}

@@ -314,7 +314,7 @@ func (s *server) authCodeFlowAuthenticationRequest(w http.ResponseWriter, r *htt
 		common.ReturnMessage(w, http.StatusInternalServerError, "Failed to save state in store.")
 		return
 	}
-	logger.Printf("TEST: authcodeflowrequest url is %s", s.oauth2Config.AuthCodeURL(state))
+	// logger.Printf("TEST: authcodeflowrequest url is %s", s.oauth2Config.AuthCodeURL(state))
 	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(state), http.StatusFound)
 }
 
@@ -381,7 +381,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	claims := map[string]interface{}{}
 
 	newTokens, _, err := oidc.TokenSource(ctx, s.oauth2Config, oauth2Tokens)
-	logger.Printf("TEST: newtokens is %+v, id token is %+v", newTokens, rawIDToken)
+	// logger.Printf("TEST: newtokens is %+v, id token is %+v", newTokens, rawIDToken)
 	userInfo, err := oidc.GetUserInfo(ctx, s.provider, newTokens)
 	if err != nil {
 		logger.Errorf("Not able to fetch userinfo: %v", err)
@@ -572,4 +572,47 @@ func (s *server) whitelistMiddleware(whitelist []string, isReady *abool.AtomicBo
 			handler.ServeHTTP(w, r)
 		})
 	}
+}
+
+func (s *server) getToken(w http.ResponseWriter, r *http.Request) {
+	logger := common.RequestLogger(r, logModuleInfo)
+	logger.Printf("TEST GET TOKEN REQUEST %+v", r)
+	userInfo, authorized := s.authenticate(w, r, false)
+	if !authorized {
+		// The user is unauthorized to perform the request
+		logger.Print("TEST GET TOKEN FALSE")
+		return
+	}
+
+	logger.Print("TEST GET TOKEN TRUE")
+
+	session, _, err := sessions.SessionFromRequest(r, s.store, sessions.UserSessionCookie, s.authHeader)
+	if err != nil {
+		logger.Errorf("TEST GET TOKEN Error getting session for request: %v", err)
+		return
+	}
+	oauthtokens := session.Values["oauth2tokens"]
+	if oauthtokens == nil {
+		logger.Errorf("TEST GET TOKEN SESSION: NO TOKENS FOUND")
+		return
+	}
+
+	userAccessToken := oauthtokens.(oauth2.Token).AccessToken
+	logger.Printf("TEST GET TOKEN SESSION: FOUND token is %s", userAccessToken)
+
+	// The user is successfully authenticated and authorized to perform the
+	// request. Proceed with writing the headers on the response and return
+	// the `204` HTTP status code.
+	for k, v := range common.UserInfoToHeaders(userInfo, &s.upstreamHTTPHeaderOpts, &s.userIdTransformer) {
+		w.Header().Set(k, v)
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Header().Add("Content-Type", "application/json")
+
+	_, err = w.Write([]byte(userAccessToken))
+	if err != nil {
+		logger.Errorf("TEST GET TOKEN Error returning token in response: %v", err)
+	}
+
+	return
 }

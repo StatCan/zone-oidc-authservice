@@ -32,7 +32,7 @@ type ClosableStore interface {
 	Close() error
 }
 
-func NewSession(store Store, name string) *sessions.Session{
+func NewSession(store Store, name string) *sessions.Session {
 	return sessions.NewSession(store, name)
 }
 
@@ -116,7 +116,7 @@ func RevokeOIDCSession(ctx context.Context, w http.ResponseWriter,
 	} else {
 		token := session.Values[UserSessionOAuth2Tokens].(oauth2.Token)
 		err := oidc.RevokeTokens(common.SetTLSContext(ctx, caBundle),
-		    _revocationEndpoint, &token, oauth2Config.ClientID, oauth2Config.ClientSecret)
+			_revocationEndpoint, &token, oauth2Config.ClientID, oauth2Config.ClientSecret)
 		if err != nil {
 			return errors.Wrap(err, "Error revoking tokens")
 		}
