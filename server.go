@@ -3,8 +3,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"time"
@@ -381,7 +383,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	claims := map[string]interface{}{}
 
 	newTokens, _, err := oidc.TokenSource(ctx, s.oauth2Config, oauth2Tokens)
-	// logger.Printf("TEST: newtokens is %+v, id token is %+v", newTokens, rawIDToken)
+
 	userInfo, err := oidc.GetUserInfo(ctx, s.provider, newTokens)
 	if err != nil {
 		logger.Errorf("Not able to fetch userinfo: %v", err)
@@ -574,45 +576,85 @@ func (s *server) whitelistMiddleware(whitelist []string, isReady *abool.AtomicBo
 	}
 }
 
+// ZONE: Custom endpoint to return an access token for the authenticated for the given scope
+// GET parameter:
+//   - scope: the desired scope for the access token
 func (s *server) getToken(w http.ResponseWriter, r *http.Request) {
 	logger := common.RequestLogger(r, logModuleInfo)
-	logger.Printf("TEST GET TOKEN REQUEST %+v", r)
-	userInfo, authorized := s.authenticate(w, r, false)
+
+	_, authorized := s.authenticate(w, r, false)
 	if !authorized {
 		// The user is unauthorized to perform the request
-		logger.Print("TEST GET TOKEN FALSE")
+		logger.Error("Unauthorized request for access token")
 		return
 	}
 
-	logger.Print("TEST GET TOKEN TRUE")
+	requestScope := r.URL.Query().Get("scope")
+	if requestScope == "" {
+		logger.Errorf("No scope given")
+		return
+	}
 
+	// Get tokens from session
 	session, _, err := sessions.SessionFromRequest(r, s.store, sessions.UserSessionCookie, s.authHeader)
 	if err != nil {
-		logger.Errorf("TEST GET TOKEN Error getting session for request: %v", err)
+		logger.Errorf("Error retrieving session from request: %v", err)
 		return
 	}
+
 	oauthtokens := session.Values["oauth2tokens"]
 	if oauthtokens == nil {
-		logger.Errorf("TEST GET TOKEN SESSION: NO TOKENS FOUND")
+		logger.Errorf("No tokens found for the session")
 		return
 	}
 
-	userAccessToken := oauthtokens.(oauth2.Token).AccessToken
-	logger.Printf("TEST GET TOKEN SESSION: FOUND token is %s", userAccessToken)
-
-	// The user is successfully authenticated and authorized to perform the
-	// request. Proceed with writing the headers on the response and return
-	// the `204` HTTP status code.
-	for k, v := range common.UserInfoToHeaders(userInfo, &s.upstreamHTTPHeaderOpts, &s.userIdTransformer) {
-		w.Header().Set(k, v)
+	// Get new token for requested scope using the refresh token
+	// https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow#refresh-the-access-token
+	userRefreshToken := oauthtokens.(oauth2.Token).RefreshToken
+	if userRefreshToken == "" {
+		logger.Errorf("No refresh token found for the session")
+		return
 	}
-	w.WriteHeader(http.StatusOK)
-	w.Header().Add("Content-Type", "application/json")
 
-	_, err = w.Write([]byte(userAccessToken))
+	data := url.Values{}
+	data.Set("client_id", s.oauth2Config.ClientID)
+	data.Set("client_secret", s.oauth2Config.ClientSecret)
+	data.Set("scope", requestScope)
+	data.Set("grant_type", "refresh_token")
+	data.Set("refresh_token", userRefreshToken)
+
+	client := &http.Client{}
+	req, err := http.NewRequest("POST", s.provider.Endpoint().TokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		logger.Errorf("TEST GET TOKEN Error returning token in response: %v", err)
+		logger.Errorf("Error creating request for new access token: %v", err)
+		return
 	}
 
-	return
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	res, err := client.Do(req)
+	if err != nil {
+		logger.Errorf("Error sending request for new access token: %v", err)
+		return
+	}
+
+	defer res.Body.Close()
+
+	decoder := json.NewDecoder(res.Body)
+	newToken := struct {
+		AccessToken  string `json:"access_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int    `json:"expires_in"`
+		ExtExpiresIn int    `json:"ext_expires_in"`
+		Scope        string `json:"scope"`
+		RefreshToken string `json:"refresh_token"`
+		IdToken      string `json:"id_token"`
+	}{}
+	err = decoder.Decode(&newToken)
+	if err != nil {
+		logger.Errorf("Error decoding response for new access token: %v", err)
+		return
+	}
+
+	common.ReturnMessage(w, http.StatusOK, newToken.AccessToken)
 }
