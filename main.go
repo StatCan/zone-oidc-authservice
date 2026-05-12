@@ -19,6 +19,7 @@ import (
 	"github.com/patrickmn/go-cache"
 	"github.com/tevino/abool"
 	"golang.org/x/oauth2"
+	"k8s.io/client-go/kubernetes"
 	clientconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
@@ -110,6 +111,7 @@ func main() {
 	// Get Kubernetes authenticator
 	var k8sAuthenticator authenticators.AuthenticatorRequest
 	restConfig, err := clientconfig.GetConfig()
+	var kubeclient *kubernetes.Clientset
 	if err != nil && c.KubernetesAuthnEnabled {
 		log.Fatalf("Error getting K8s config: %v", err)
 	} else if err != nil {
@@ -126,6 +128,8 @@ func main() {
 			log.Debugf("Error creating K8s authenticator:: %v. "+
 				"Kubernetes authenticator is disabled, skipping ...", err)
 		}
+
+		kubeclient = kubernetes.NewForConfigOrDie(restConfig)
 	}
 
 	// Get OIDC Session Authenticator
@@ -236,6 +240,7 @@ func main() {
 			idTokenAuthenticator,
 		},
 		authorizers: authorizers,
+		kubeclient:  kubeclient,
 	}
 	switch c.SessionSameSite {
 	case "None":
