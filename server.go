@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -22,13 +23,15 @@ import (
 	"github.com/tevino/abool"
 	"golang.org/x/oauth2"
 	v1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/client-go/kubernetes"
 )
 
 const (
-	logModuleInfo = "server"
+	logModuleInfo         = "server"
+	accessTokenSecretName = "oidc-authservice-token"
 )
 
 var (
@@ -328,6 +331,80 @@ func (s *server) authCodeFlowAuthenticationRequest(w http.ResponseWriter, r *htt
 	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(state), http.StatusFound)
 }
 
+// Helper function to convert the userID(email) into a namespace value
+func getNamespaceFromEmail(email string) string {
+	namespaceName := ""
+
+	split_userID := strings.Split(email, "@")
+	if len(split_userID) > 0 {
+		username := split_userID[0]
+
+		// Remove any non-alphanumeric and non-underscore character from username
+		regexNonAlpha := regexp.MustCompile(`[^\w]|\.`)
+		regexNonAlphaResult := regexNonAlpha.ReplaceAllString(username, "-")
+
+		// Remove any leading or trailing underscores from username
+		regexTrail := regexp.MustCompile(`^-+|-+$|_`)
+		regexTrailResult := regexTrail.ReplaceAllString(regexNonAlphaResult, "")
+
+		// lower case the namespace value
+		namespaceName = strings.ToLower(regexTrailResult)
+	}
+
+	return namespaceName
+}
+
+func (s *server) updateAccessTokenSecret(namespace string, accessToken string, expiry time.Time) error {
+	// Get the access tokens secret
+	secret, err := s.kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), accessTokenSecretName, metav1.GetOptions{})
+	if err != nil {
+		// Return if it's a real error
+		if !k8serrors.IsNotFound(err) {
+			// logger.Errorf("Error getting secret for access token: %v", err)
+			return err
+		} else {
+			// if the secret is not found, create it
+			secret = &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: accessTokenSecretName,
+				},
+				// stringData allows passing plain text; K8s encodes it to Base64 automatically
+				StringData: map[string]string{
+					// "accessToken": oauth2Tokens.Extra("access_token").(string),
+					"accessToken": accessToken,
+					"expiry":      expiry.String(),
+				},
+				Type: v1.SecretTypeOpaque,
+			}
+
+			// logger.Info("Creating secret for access token")
+
+			_, err := s.kubeclient.CoreV1().Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
+			if err != nil {
+				// logger.Errorf("Error creating secret for access token: %v", err)
+				return err
+			}
+		}
+	}
+
+	// if the secret exists, update it
+	secret.Data = map[string][]byte{
+		// "accessToken": []byte(oauth2Tokens.Extra("access_token").(string)),
+		"accessToken": []byte(accessToken),
+		"expiry":      []byte(expiry.String()),
+	}
+
+	// logger.Info("Updating secret for access token")
+
+	_, err = s.kubeclient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
+	if err != nil {
+		// logger.Errorf("Error updating secret for access token: %v", err)
+		return err
+	}
+
+	return nil
+}
+
 // callback is the handler responsible for exchanging the auth_code and retrieving an id_token.
 func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 
@@ -370,8 +447,6 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Infof("TEST: tokens %+v", oauth2Tokens)
-
 	rawIDToken, ok := oauth2Tokens.Extra("id_token").(string)
 	if !ok {
 		logger.Error("No id_token field available.")
@@ -389,73 +464,12 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// var claims2 struct {
-	// 	Group              string `json:"group"`
-	// 	PreferredUsername string `json:"preferred_username"`
-	// }
-	var claims2 map[string]interface{}
-	if err := verifiedIdToken.Claims(&claims2); err != nil {
+	var claims map[string]interface{}
+	if err := verifiedIdToken.Claims(&claims); err != nil {
 		logger.Errorf("Not able to get ID token claims: %v", err)
 		common.ReturnMessage(w, http.StatusInternalServerError, "Not able to get ID token claims.")
 		return
 	}
-
-	logger.Infof("TEST: my id_token is %+v, claims is %+v", verifiedIdToken, claims2)
-
-	// UserInfo endpoint to get claims
-	// claims := map[string]interface{}{}
-
-	// newTokens, _, err := oidc.TokenSource(ctx, s.oauth2Config, oauth2Tokens)
-	// if err != nil {
-	// 	logger.Errorf("Failed to get new tokens: %v", err)
-	// 	common.ReturnMessage(w, http.StatusInternalServerError, "Failed to get new tokens.")
-	// 	return
-	// }
-
-	// req, err := s.getOnBehalfOfRequest("User.Read", newTokens.AccessToken)
-	// if err != nil {
-	// 	logger.Errorf("Failed to create OBO request: %v", err)
-	// 	common.ReturnMessage(w, http.StatusInternalServerError, "Failed to create OBO request.")
-	// 	return
-	// }
-
-	// client := &http.Client{}
-	// res, err := client.Do(req)
-	// if err != nil {
-	// 	logger.Errorf("Error sending request for OBO access token: %v", err)
-	// 	return
-	// }
-	// defer res.Body.Close()
-
-	// decoder := json.NewDecoder(res.Body)
-	// oboToken := struct {
-	// 	AccessToken  string `json:"access_token"`
-	// 	TokenType    string `json:"token_type"`
-	// 	ExpiresIn    int    `json:"expires_in"`
-	// 	ExtExpiresIn int    `json:"ext_expires_in"`
-	// 	Scope        string `json:"scope"`
-	// 	RefreshToken string `json:"refresh_token"`
-	// }{}
-	// err = decoder.Decode(&oboToken)
-	// if err != nil {
-	// 	logger.Errorf("Error decoding response for OBO access token: %v", err)
-	// 	return
-	// }
-
-	// newTokens.AccessToken = oboToken.AccessToken
-	// newTokens.TokenType = oboToken.TokenType
-	// userInfo, err := oidc.GetUserInfo(ctx, s.provider, newTokens)
-	// if err != nil {
-	// 	logger.Errorf("Not able to fetch userinfo: %v", err)
-	// 	common.ReturnMessage(w, http.StatusInternalServerError, "Not able to fetch userinfo.")
-	// 	return
-	// }
-
-	// if err = userInfo.Claims(&claims); err != nil {
-	// 	logger.Errorf("Problem getting userinfo claims: %v", err)
-	// 	common.ReturnMessage(w, http.StatusInternalServerError, "Not able to fetch userinfo claims.")
-	// 	return
-	// }
 
 	// User is authenticated, create new session.
 	session := sessions.NewSession(s.store, sessions.UserSessionCookie)
@@ -464,23 +478,23 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	// Extra layer of CSRF protection
 	session.Options.SameSite = s.sessionSameSite
 
-	userID, ok := claims2[s.idTokenOpts.UserIDClaim].(string)
+	userID, ok := claims[s.idTokenOpts.UserIDClaim].(string)
 	if !ok {
-		logger.Errorf("Couldn't find claim `%s' in claims `%v'", s.idTokenOpts.UserIDClaim, claims2)
+		logger.Errorf("Couldn't find claim `%s' in claims `%v'", s.idTokenOpts.UserIDClaim, claims)
 		common.ReturnMessage(w, http.StatusInternalServerError,
 			fmt.Sprintf("Couldn't find userID claim in `%s' in userinfo.", s.idTokenOpts.UserIDClaim))
 		return
 	}
 
 	groups := []string{}
-	groupsClaim := claims2[s.idTokenOpts.GroupsClaim]
+	groupsClaim := claims[s.idTokenOpts.GroupsClaim]
 	if groupsClaim != nil {
 		groups = common.InterfaceSliceToStringSlice(groupsClaim.([]interface{}))
 	}
-	// logger.Infof("TEST: pre save session is %+v, but r cookies is %+v, but setcook is %+v", session, r.Cookies(), w.Header().Values("Set-Cookie"))
+
 	session.Values[sessions.UserSessionUserID] = userID
 	session.Values[sessions.UserSessionGroups] = groups
-	session.Values[sessions.UserSessionClaims] = claims2
+	session.Values[sessions.UserSessionClaims] = claims
 	session.Values[sessions.UserSessionIDToken] = rawIDToken
 	session.Values[sessions.UserSessionOAuth2Tokens] = oauth2Tokens
 	if err := session.Save(r, w); err != nil {
@@ -488,68 +502,19 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 		common.ReturnMessage(w, http.StatusInternalServerError, "Error creating user session")
 		return
 	}
-	// logger.Infof("TEST: post save session is %+v, but r cookies is %+v, but setcook is %+v", session, r.Cookies(), w.Header().Values("Set-Cookie"))
 
 	// Get namespace from userID(email)
-	split_userID := strings.Split(userID, "@")
-	if len(split_userID) > 0 {
-		username := split_userID[0]
+	namespace := getNamespaceFromEmail(userID)
+	if namespace != "" {
+		logger.Infof("Updating access token secret for namespace %s", namespace)
 
-		logger.Infof("TEST: the username is %s", username)
-
-		// Remove any non-alphanumeric and non-underscore character from username
-		regexNonAlpha := regexp.MustCompile(`[^\w]|\.`)
-		regexNonAlphaResult := regexNonAlpha.ReplaceAllString(username, "-")
-
-		logger.Infof("TEST: the first regex is %s", regexNonAlphaResult)
-
-		// Remove any leading or trailing underscores from username
-		regexTrail := regexp.MustCompile(`^-+|-+$|_`)
-		regexTrailResult := regexTrail.ReplaceAllString(regexNonAlphaResult, "")
-		logger.Infof("TEST: the second regex is %s", regexTrailResult)
-
-		// lower case the namespace value
-		namespace := strings.ToLower(regexTrailResult)
-
-		logger.Infof("TEST: the namespace is %s", namespace)
-
-		// Get the access tokens secret
-		secret, err := s.kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), "oidc-authservice-token", metav1.GetOptions{})
+		// create/update the secret in the namespace
+		err = s.updateAccessTokenSecret(namespace, oauth2Tokens.AccessToken, oauth2Tokens.Expiry)
 		if err != nil {
-			logger.Errorf("Error getting secret for access token: %v", err)
+			logger.Errorf("Error updating secret for access token in namespace %s: %v", namespace, err)
 		}
-
-		// if the secret doesn't exist, create it. Else, update it
-		if secret.Name == "" {
-			secret = &v1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "oidc-authservice-tokens",
-				},
-				// stringData allows passing plain text; K8s encodes it to Base64 automatically
-				StringData: map[string]string{
-					"accessToken": oauth2Tokens.Extra("access_token").(string),
-				},
-				Type: v1.SecretTypeOpaque,
-			}
-
-			logger.Info("Creating secret for access token")
-
-			_, err := s.kubeclient.CoreV1().Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
-			if err != nil {
-				logger.Errorf("Error creating secret for access token: %v", err)
-			}
-		} else {
-			secret.Data = map[string][]byte{
-				"accessToken": []byte(oauth2Tokens.Extra("access_token").(string)),
-			}
-
-			logger.Info("Updating secret for access token")
-
-			_, err := s.kubeclient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
-			if err != nil {
-				logger.Errorf("Error updating secret for access token: %v", err)
-			}
-		}
+	} else {
+		logger.Warningf("Couldn't get namespace for userID: %s. Skipping creating K8s secret.", userID)
 	}
 
 	// Getting the firstVisitedURL from the OIDC state
@@ -565,7 +530,6 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	logger.WithField("redirectTo", destination).
 		Info("Login validated with ID token, redirecting.")
-	// logger.Infof("TEST: response is %+v, header is %+v, values1 is %+v, values2 is %+v, access_token is %+v", w, w.Header(), w.Header().Values("Set-Cookie"), w.Header().Values("authservice_session"), oauth2Tokens.AccessToken)
 	http.Redirect(w, r, destination, http.StatusFound)
 }
 
@@ -700,6 +664,8 @@ func (s *server) whitelistMiddleware(whitelist []string, isReady *abool.AtomicBo
 	}
 }
 
+// Zone: Creates an HTTP request object for the on-behalf-of flow
+// to get a new access token from an existing token
 func (s *server) getOnBehalfOfRequest(requestScope string, accessToken string) (*http.Request, error) {
 	data := url.Values{}
 	data.Set("client_id", s.oauth2Config.ClientID)
@@ -719,105 +685,101 @@ func (s *server) getOnBehalfOfRequest(requestScope string, accessToken string) (
 	return req, nil
 }
 
-// ZONE: Custom endpoint to return an access token for the authenticated for the given scope
+// ZONE: Custom endpoint to do the on-behalf-of flow to acquire a new access token
+// by using the requester's original access token that was acquired when loging in.
+//
 // GET parameter:
 // - scope: the desired scope for the access token
-func (s *server) getToken(w http.ResponseWriter, r *http.Request) {
+// Returns the access token for the given scope
+func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 	logger := common.RequestLogger(r, logModuleInfo)
-	logger.Infof("TEST: request %+v", r)
-	// _, authorized := s.authenticate(w, r, false)
-	// if !authorized {
-	// 	// The user is unauthorized to perform the request
-	// 	logger.Error("Unauthorized request for access token")
-	// 	return
-	// }
 
-	s1 := r.Header.Get("X-Envoy-Peer-Metadata-Id")
-	s2 := r.RemoteAddr
-
-	logger.Infof("TEST: my two infos are s1 %+v and s2 %+v", s1, s2)
-
+	// Get the desired scope from the request parameters
 	requestScope := r.URL.Query().Get("scope")
 	if requestScope == "" {
-		logger.Errorf("No scope given")
+		logger.Errorf("Missing parameter: scope")
+		common.ReturnMessage(w, http.StatusBadRequest, "Missing parameter: scope")
 		return
 	}
 
-	// Get tokens from session
-
-	// session, _, err := sessions.SessionFromRequest(r, s.store, sessions.UserSessionCookie, s.authHeader)
-	// if err != nil {
-	// 	logger.Errorf("Error retrieving session from request: %v", err)
-	// 	return
-	// }
-
-	// oauthtokens := session.Values["oauth2tokens"]
-	// if oauthtokens == nil {
-	// 	logger.Errorf("No tokens found for the session")
-	// 	return
-	// }
-
-	// // Get new token for requested scope using the refresh token
-	// // https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow#refresh-the-access-token
-	// userRefreshToken := oauthtokens.(oauth2.Token).RefreshToken
-	// if userRefreshToken == "" {
-	// 	logger.Errorf("No refresh token found for the session")
-	// 	return
-	// }
-
-	// Get the access tokens secret
-	secret, err := s.kubeclient.CoreV1().Secrets("first-last").Get(context.TODO(), "oidc-authservice-tokens", metav1.GetOptions{})
+	sourceIP := strings.Split(r.RemoteAddr, ":")[0] // get source pod IP (no port)
+	// Gets the namespace of the requesting pod
+	pods, err := s.kubeclient.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{
+		FieldSelector: "status.podIP=" + sourceIP,
+	})
 	if err != nil {
-		logger.Errorf("Error getting secret for access token: %v", err)
+		logger.Errorf("Failed to get pods with remote address %s : %+v", sourceIP, err)
+		common.ReturnMessage(w, http.StatusForbidden, "Error: Unable to determine the source namespace of the request")
+		return
+	} else if pods == nil || pods != nil && pods.Size() == 0 {
+		logger.Errorf("No pods found with source IP %s", sourceIP)
+		common.ReturnMessage(w, http.StatusForbidden, "Error: Unable to determine the source namespace of the request")
+		return
+	}
+	namespace := pods.Items[0].Namespace
+
+	// Get the access token secret from the requesting namespace
+	secret, err := s.kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), accessTokenSecretName, metav1.GetOptions{})
+	if err != nil {
+		logger.Errorf("Error getting access token from secret in namespace %s: %v", namespace, err)
+		common.ReturnMessage(w, http.StatusInternalServerError, "Error: Unable to get initial access token for passthrough authentication")
+		return
 	}
 
-	// data := url.Values{}
-	// data.Set("client_id", s.oauth2Config.ClientID)
-	// data.Set("client_secret", s.oauth2Config.ClientSecret)
-	// data.Set("scope", requestScope)
-	// data.Set("grant_type", "refresh_token")
-	// data.Set("refresh_token", userRefreshToken)
-
-	client := &http.Client{}
-	// req, err := http.NewRequest("POST", s.provider.Endpoint().TokenURL, strings.NewReader(data.Encode()))
-	// if err != nil {
-	// 	logger.Errorf("Error creating request for new access token: %v", err)
-	// 	return
-	// }
-
-	// req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-
+	// Get the on-behalf-of request
 	req, err := s.getOnBehalfOfRequest(requestScope, string(secret.Data["accessToken"]))
 	if err != nil {
-		logger.Errorf("Error creating request for new access token: %v", err)
+		logger.Errorf("Error creating on-behalf-of request: %v", err)
+		common.ReturnMessage(w, http.StatusInternalServerError, "Error: Unable to create on-behalf-of request")
 		return
 	}
 
-	logger.Infof("TEST: my request is %v", err)
-
+	// Send the on-behalf-of request
+	client := &http.Client{}
 	res, err := client.Do(req)
 	if err != nil {
-		logger.Errorf("Error sending request for new access token: %v", err)
+		logger.Errorf("Error while sending sending on-behalf-of request for namespace %s: %v", namespace, err)
+		common.ReturnMessage(w, http.StatusInternalServerError, "Error while sending on-behalf-of request")
 		return
 	}
 
 	defer res.Body.Close()
 
-	decoder := json.NewDecoder(res.Body)
-	newToken := struct {
-		AccessToken  string `json:"access_token"`
-		TokenType    string `json:"token_type"`
-		ExpiresIn    int    `json:"expires_in"`
-		ExtExpiresIn int    `json:"ext_expires_in"`
-		Scope        string `json:"scope"`
-		RefreshToken string `json:"refresh_token"`
-		IdToken      string `json:"id_token"`
-	}{}
-	err = decoder.Decode(&newToken)
-	if err != nil {
-		logger.Errorf("Error decoding response for new access token: %v", err)
+	// if OBO response has error, return that error.
+	// if not, process the response
+	if res.StatusCode != http.StatusOK {
+		// Read the response body and convert to string
+		bodyBytes, err := io.ReadAll(res.Body)
+		if err != nil {
+			logger.Errorf("Error Error while processing on-behalf-of response for namespace %s: %+v", namespace, err)
+			common.ReturnMessage(w, http.StatusInternalServerError, "Error while processing on-behalf-of response")
+			return
+		}
+		bodyString := string(bodyBytes)
+
+		common.ReturnMessage(w, res.StatusCode, bodyString)
+		return
+	} else {
+		// Convert response body to JSON
+		decoder := json.NewDecoder(res.Body)
+		newToken := struct {
+			AccessToken  string `json:"access_token"`
+			TokenType    string `json:"token_type"`
+			ExpiresIn    int    `json:"expires_in"`
+			ExtExpiresIn int    `json:"ext_expires_in"`
+			Scope        string `json:"scope"`
+			RefreshToken string `json:"refresh_token"`
+			IdToken      string `json:"id_token"`
+		}{}
+		err = decoder.Decode(&newToken)
+		if err != nil {
+			logger.Errorf("Error decoding response for new access token: %v", err)
+			common.ReturnMessage(w, http.StatusInternalServerError, "Error processing on-behalf-of response")
+			return
+		}
+
+		// return the new on-behalf-of token for the desired scope
+		common.ReturnMessage(w, http.StatusOK, newToken.AccessToken)
 		return
 	}
-
-	common.ReturnMessage(w, http.StatusOK, newToken.AccessToken)
 }
