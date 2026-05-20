@@ -327,11 +327,11 @@ func (s *server) authCodeFlowAuthenticationRequest(w http.ResponseWriter, r *htt
 		common.ReturnMessage(w, http.StatusInternalServerError, "Failed to save state in store.")
 		return
 	}
-	// logger.Printf("TEST: authcodeflowrequest url is %s", s.oauth2Config.AuthCodeURL(state))
+
 	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(state), http.StatusFound)
 }
 
-// Helper function to convert the userID(email) into a namespace value
+// Zone: Helper function to convert the userID(email) into a namespace value
 func getNamespaceFromEmail(email string) string {
 	namespaceName := ""
 
@@ -354,13 +354,14 @@ func getNamespaceFromEmail(email string) string {
 	return namespaceName
 }
 
+// Zone: Updates the K8s secret with the logged in user's access token and expiry time
+// Creates the secret if it doesn't exist. Updates it if it does already exist.
 func (s *server) updateAccessTokenSecret(namespace string, accessToken string, expiry time.Time) error {
 	// Get the access tokens secret
 	secret, err := s.kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), accessTokenSecretName, metav1.GetOptions{})
 	if err != nil {
 		// Return if it's a real error
 		if !k8serrors.IsNotFound(err) {
-			// logger.Errorf("Error getting secret for access token: %v", err)
 			return err
 		} else {
 			// if the secret is not found, create it
@@ -370,18 +371,14 @@ func (s *server) updateAccessTokenSecret(namespace string, accessToken string, e
 				},
 				// stringData allows passing plain text; K8s encodes it to Base64 automatically
 				StringData: map[string]string{
-					// "accessToken": oauth2Tokens.Extra("access_token").(string),
 					"accessToken": accessToken,
 					"expiry":      expiry.String(),
 				},
 				Type: v1.SecretTypeOpaque,
 			}
 
-			// logger.Info("Creating secret for access token")
-
 			_, err := s.kubeclient.CoreV1().Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
 			if err != nil {
-				// logger.Errorf("Error creating secret for access token: %v", err)
 				return err
 			}
 		}
@@ -389,16 +386,12 @@ func (s *server) updateAccessTokenSecret(namespace string, accessToken string, e
 
 	// if the secret exists, update it
 	secret.Data = map[string][]byte{
-		// "accessToken": []byte(oauth2Tokens.Extra("access_token").(string)),
 		"accessToken": []byte(accessToken),
 		"expiry":      []byte(expiry.String()),
 	}
 
-	// logger.Info("Updating secret for access token")
-
 	_, err = s.kubeclient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
 	if err != nil {
-		// logger.Errorf("Error updating secret for access token: %v", err)
 		return err
 	}
 
@@ -504,6 +497,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get namespace from userID(email)
+	// Just log the errors, don't prevent users from logging in
 	namespace := getNamespaceFromEmail(userID)
 	if namespace != "" {
 		logger.Infof("Updating access token secret for namespace %s", namespace)
@@ -702,8 +696,10 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceIP := strings.Split(r.RemoteAddr, ":")[0] // get source pod IP (no port)
-	// Gets the namespace of the requesting pod
+	// get source pod IP (no port)
+	sourceIP := strings.Split(r.RemoteAddr, ":")[0]
+
+	// Gets the namespace of the requesting pod using the source IP
 	pods, err := s.kubeclient.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{
 		FieldSelector: "status.podIP=" + sourceIP,
 	})
@@ -716,6 +712,7 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 		common.ReturnMessage(w, http.StatusForbidden, "Error: Unable to determine the source namespace of the request")
 		return
 	}
+
 	namespace := pods.Items[0].Namespace
 
 	// Get the access token secret from the requesting namespace
@@ -745,7 +742,7 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 
 	defer res.Body.Close()
 
-	// if OBO response has error, return that error.
+	// if OBO response has error, return the error.
 	// if not, process the response
 	if res.StatusCode != http.StatusOK {
 		// Read the response body and convert to string
