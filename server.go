@@ -3,9 +3,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,11 +19,16 @@ import (
 	"github.com/pkg/errors"
 	"github.com/tevino/abool"
 	"golang.org/x/oauth2"
+	v1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/client-go/kubernetes"
 )
 
 const (
-	logModuleInfo = "server"
+	logModuleInfo         = "server"
+	accessTokenSecretName = "oidc-authservice-token"
 )
 
 var (
@@ -66,6 +73,9 @@ type server struct {
 	userIdTransformer      common.UserIDTransformer
 	caBundle               []byte
 	sessionSameSite        http.SameSite
+
+	// ZONE: K8s client for creating k8s resource
+	kubeclient *kubernetes.Clientset
 }
 
 // authenticate_or_login calls initiates the Authorization Code Flow if the user
@@ -318,6 +328,73 @@ func (s *server) authCodeFlowAuthenticationRequest(w http.ResponseWriter, r *htt
 	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(state), http.StatusFound)
 }
 
+// Zone: Helper function to convert the userID(email) into a namespace value
+func getNamespaceFromEmail(email string) string {
+	namespaceName := ""
+
+	split_userID := strings.Split(email, "@")
+	if len(split_userID) > 0 {
+		username := split_userID[0]
+
+		// Remove any non-alphanumeric and non-underscore character from username
+		regexNonAlpha := regexp.MustCompile(`[^\w]|\.`)
+		regexNonAlphaResult := regexNonAlpha.ReplaceAllString(username, "-")
+
+		// Remove any leading or trailing underscores from username
+		regexTrail := regexp.MustCompile(`^-+|-+$|_`)
+		regexTrailResult := regexTrail.ReplaceAllString(regexNonAlphaResult, "")
+
+		// lower case the namespace value
+		namespaceName = strings.ToLower(regexTrailResult)
+	}
+
+	return namespaceName
+}
+
+// Zone: Updates the K8s secret with the logged in user's access token and expiry time
+// Creates the secret if it doesn't exist. Updates it if it does already exist.
+func (s *server) updateAccessTokenSecret(namespace string, accessToken string, expiry time.Time) error {
+	// Get the access tokens secret
+	secret, err := s.kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), accessTokenSecretName, metav1.GetOptions{})
+	if err != nil {
+		// Return if it's a real error
+		if !k8serrors.IsNotFound(err) {
+			return err
+		} else {
+			// if the secret is not found, create it
+			secret = &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: accessTokenSecretName,
+				},
+				// stringData allows passing plain text; K8s encodes it to Base64 automatically
+				StringData: map[string]string{
+					"accessToken": accessToken,
+					"expiry":      expiry.String(),
+				},
+				Type: v1.SecretTypeOpaque,
+			}
+
+			_, err := s.kubeclient.CoreV1().Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// if the secret exists, update it
+	secret.Data = map[string][]byte{
+		"accessToken": []byte(accessToken),
+		"expiry":      []byte(expiry.String()),
+	}
+
+	_, err = s.kubeclient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // callback is the handler responsible for exchanging the auth_code and retrieving an id_token.
 func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 
@@ -370,27 +447,17 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	// Verifying received ID token
 	verifier := s.provider.Verifier(
 		oidc.NewConfig(s.oauth2Config.ClientID))
-	_, err = verifier.Verify(ctx, rawIDToken)
+	verifiedIdToken, err := verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		logger.Errorf("Not able to verify ID token: %v", err)
 		common.ReturnMessage(w, http.StatusInternalServerError, "Unable to verify ID token.")
 		return
 	}
 
-	// UserInfo endpoint to get claims
-	claims := map[string]interface{}{}
-
-	newTokens, _, err := oidc.TokenSource(ctx, s.oauth2Config, oauth2Tokens)
-	userInfo, err := oidc.GetUserInfo(ctx, s.provider, newTokens)
-	if err != nil {
-		logger.Errorf("Not able to fetch userinfo: %v", err)
-		common.ReturnMessage(w, http.StatusInternalServerError, "Not able to fetch userinfo.")
-		return
-	}
-
-	if err = userInfo.Claims(&claims); err != nil {
-		logger.Errorf("Problem getting userinfo claims: %v", err)
-		common.ReturnMessage(w, http.StatusInternalServerError, "Not able to fetch userinfo claims.")
+	var claims map[string]interface{}
+	if err := verifiedIdToken.Claims(&claims); err != nil {
+		logger.Errorf("Not able to get ID token claims: %v", err)
+		common.ReturnMessage(w, http.StatusInternalServerError, "Not able to get ID token claims.")
 		return
 	}
 
@@ -424,6 +491,21 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 		logger.Errorf("Couldn't create user session: %v", err)
 		common.ReturnMessage(w, http.StatusInternalServerError, "Error creating user session")
 		return
+	}
+
+	// Get namespace from userID(email)
+	// Just log the errors, don't prevent users from logging in
+	namespace := getNamespaceFromEmail(userID)
+	if namespace != "" {
+		logger.Infof("Updating access token secret for namespace %s", namespace)
+
+		// create/update the secret in the namespace
+		err = s.updateAccessTokenSecret(namespace, oauth2Tokens.AccessToken, oauth2Tokens.Expiry)
+		if err != nil {
+			logger.Errorf("Error updating secret for access token in namespace %s: %v", namespace, err)
+		}
+	} else {
+		logger.Warningf("Couldn't get namespace for userID: %s. Skipping creating K8s secret.", userID)
 	}
 
 	// Getting the firstVisitedURL from the OIDC state
