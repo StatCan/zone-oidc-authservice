@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/arrikto/oidc-authservice/common"
-	"github.com/arrikto/oidc-authservice/oidc"
-	"github.com/arrikto/oidc-authservice/sessions"
+	"github.com/StatCan/zone-oidc-authservice/common"
+	"github.com/StatCan/zone-oidc-authservice/oidc"
+	"github.com/StatCan/zone-oidc-authservice/sessions"
 	"github.com/pkg/errors"
 	"golang.org/x/oauth2"
 	"k8s.io/apiserver/pkg/authentication/authenticator"

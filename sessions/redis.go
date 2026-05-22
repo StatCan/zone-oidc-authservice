@@ -3,19 +3,18 @@ package sessions
 import (
 	"context"
 
-	"github.com/arrikto/oidc-authservice/common"
+	"github.com/StatCan/zone-oidc-authservice/common"
 	"github.com/go-redis/redis/v8"
 	"github.com/rbcervilla/redisstore/v8"
 )
-
 
 func newRedisSessionStore(addr, password, keyPrefix string, db int) (*redisstore.RedisStore, error) {
 	log := common.StandardLogger()
 
 	client := redis.NewClient(&redis.Options{
-		Addr: addr,
+		Addr:     addr,
 		Password: password,
-		DB: db,
+		DB:       db,
 	})
 
 	store, err := redisstore.NewRedisStore(context.Background(), client)

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arrikto/oidc-authservice/common"
+	"github.com/StatCan/zone-oidc-authservice/common"
 )
 
 func TestWebServerDefault(t *testing.T) {

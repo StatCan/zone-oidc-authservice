@@ -3,8 +3,8 @@ package authenticators
 import (
 	"net/http"
 
-	"github.com/arrikto/oidc-authservice/common"
-	"github.com/arrikto/oidc-authservice/oidc"
+	"github.com/StatCan/zone-oidc-authservice/common"
+	"github.com/StatCan/zone-oidc-authservice/oidc"
 	"github.com/pkg/errors"
 	"golang.org/x/oauth2"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
@@ -12,12 +12,12 @@ import (
 )
 
 type OpaqueTokenAuthenticator struct {
-	Header        string // header name where opaque access token is stored
-	CaBundle      []byte
-	Provider      oidc.Provider
-	Oauth2Config  *oauth2.Config
-	UserIDClaim   string // retrieve the userid claim
-	GroupsClaim   string // retrieve the groups claim
+	Header       string // header name where opaque access token is stored
+	CaBundle     []byte
+	Provider     oidc.Provider
+	Oauth2Config *oauth2.Config
+	UserIDClaim  string // retrieve the userid claim
+	GroupsClaim  string // retrieve the groups claim
 }
 
 func (s *OpaqueTokenAuthenticator) AuthenticateRequest(r *http.Request) (*authenticator.Response, bool, error) {
@@ -30,9 +30,9 @@ func (s *OpaqueTokenAuthenticator) AuthenticateRequest(r *http.Request) (*authen
 		return nil, false, nil
 	}
 
-	opaque := &oauth2.Token {
+	opaque := &oauth2.Token{
 		AccessToken: bearer,
-		TokenType: "Bearer",
+		TokenType:   "Bearer",
 	}
 
 	ctx := common.SetTLSContext(r.Context(), s.CaBundle)
@@ -75,7 +75,7 @@ func (s *OpaqueTokenAuthenticator) AuthenticateRequest(r *http.Request) (*authen
 }
 
 // Retrieve the USERID_CLAIM and the GROUPS_CLAIM from the /userinfo response
-func (s *OpaqueTokenAuthenticator) retrieveUserIDGroupsClaims(claims map[string]interface{}) (string, []string, error){
+func (s *OpaqueTokenAuthenticator) retrieveUserIDGroupsClaims(claims map[string]interface{}) (string, []string, error) {
 
 	if claims[s.UserIDClaim] == nil {
 		claimErr := errors.New("USERID_CLAIM not found in the response of the userinfo endpoint")
@@ -96,7 +96,7 @@ func (s *OpaqueTokenAuthenticator) retrieveUserIDGroupsClaims(claims map[string]
 
 // The Opaque Access Token Authenticator implements the Cacheable
 // interface with the getCacheKey().
-func (s *OpaqueTokenAuthenticator) GetCacheKey(r *http.Request) (string) {
+func (s *OpaqueTokenAuthenticator) GetCacheKey(r *http.Request) string {
 	return common.GetBearerToken(r.Header.Get("Authorization"))
 
 }

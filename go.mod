@@ -1,4 +1,4 @@
-module github.com/arrikto/oidc-authservice
+module github.com/StatCan/zone-oidc-authservice
 
 go 1.18
 

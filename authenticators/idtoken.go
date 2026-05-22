@@ -3,8 +3,8 @@ package authenticators
 import (
 	"net/http"
 
-	"github.com/arrikto/oidc-authservice/common"
-	"github.com/arrikto/oidc-authservice/oidc"
+	"github.com/StatCan/zone-oidc-authservice/common"
+	"github.com/StatCan/zone-oidc-authservice/oidc"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 )
