@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arrikto/oidc-authservice/common"
+	"github.com/StatCan/zone-oidc-authservice/common"
 	"github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
@@ -129,53 +129,53 @@ func TestGetUserInfo_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestParseUserInfo(t *testing.T){
+func TestParseUserInfo(t *testing.T) {
 
-	testCases := []struct{
-		testName 		 string
+	testCases := []struct {
+		testName         string
 		userInfoResponse string
-		success			 bool
+		success          bool
 	}{
 		{
-			testName: "EmailVerified: true (boolean)",
+			testName:         "EmailVerified: true (boolean)",
 			userInfoResponse: `{"sub": "", "profile": "", "email": "", "email_verified": true}`,
-			success: true,
+			success:          true,
 		},
 		{
-			testName: "EmailVerified: false (boolean)",
+			testName:         "EmailVerified: false (boolean)",
 			userInfoResponse: `{"sub": "","profile": "","email": "","email_verified": false}`,
-			success: true,
+			success:          true,
 		},
 		{
-			testName: "EmailVerified: true (string)",
+			testName:         "EmailVerified: true (string)",
 			userInfoResponse: `{"sub": "","profile": "","email": "","email_verified": "true"}`,
-			success: true,
+			success:          true,
 		},
 		{
-			testName: "EmailVerified: false (string)",
+			testName:         "EmailVerified: false (string)",
 			userInfoResponse: `{"sub": "","profile": "","email": "","email_verified": "false"}`,
-			success: true,
+			success:          true,
 		},
 		{
-			testName: "EmailVerified: nil",
+			testName:         "EmailVerified: nil",
 			userInfoResponse: `{"sub": "","profile": "","email": ""}`,
-			success: true,
+			success:          true,
 		},
 		{
-			testName: "EmailVerified: not boolean, not string, not nil",
+			testName:         "EmailVerified: not boolean, not string, not nil",
 			userInfoResponse: `{"sub": "","profile": "","email": "","email_verified": 42}`,
-			success: false,
+			success:          false,
 		},
 		{
-			testName: "EmailVerified: irrelevant string",
+			testName:         "EmailVerified: irrelevant string",
 			userInfoResponse: `{"sub": "","profile": "","email": "","email_verified": "fals"}`,
-			success: false,
+			success:          false,
 		},
 	}
 
 	for _, c := range testCases {
 		t.Run(c.testName, func(t *testing.T) {
-			_, err:= ParseUserInfo([]byte(c.userInfoResponse))
+			_, err := ParseUserInfo([]byte(c.userInfoResponse))
 
 			success := true
 			if err != nil {

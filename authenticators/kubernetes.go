@@ -4,13 +4,13 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/StatCan/zone-oidc-authservice/common"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/authenticatorfactory"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/plugin/pkg/authenticator/token/webhook"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"github.com/arrikto/oidc-authservice/common"
 )
 
 const (
@@ -24,10 +24,10 @@ type KubernetesAuthenticator struct {
 
 func NewKubernetesAuthenticator(c *rest.Config, aud []string) (AuthenticatorRequest, error) {
 	config := authenticatorfactory.DelegatingAuthenticatorConfig{
-		Anonymous:                false,
-		TokenAccessReviewClient:  kubernetes.NewForConfigOrDie(c).AuthenticationV1(),
-		WebhookRetryBackoff:      webhook.DefaultRetryBackoff(),
-		APIAudiences:             aud,
+		Anonymous:               false,
+		TokenAccessReviewClient: kubernetes.NewForConfigOrDie(c).AuthenticationV1(),
+		WebhookRetryBackoff:     webhook.DefaultRetryBackoff(),
+		APIAudiences:            aud,
 	}
 	k8sAuthenticator, _, err := config.New()
 	return &KubernetesAuthenticator{Audiences: aud, Authenticator: k8sAuthenticator}, err
@@ -63,7 +63,7 @@ func (k8sauth *KubernetesAuthenticator) AuthenticateRequest(r *http.Request) (*a
 
 // The Kubernetes Authenticator implements the Cacheable
 // interface with the getCacheKey().
-func (k8sauth *KubernetesAuthenticator) GetCacheKey(r *http.Request) (string) {
+func (k8sauth *KubernetesAuthenticator) GetCacheKey(r *http.Request) string {
 	return common.GetBearerToken(r.Header.Get("Authorization"))
 
 }

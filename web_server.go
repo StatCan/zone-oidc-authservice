@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/arrikto/oidc-authservice/common"
+	"github.com/StatCan/zone-oidc-authservice/common"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 )
@@ -18,7 +18,7 @@ const (
 )
 
 var (
-	ThemesPath      = "/site/themes"
+	ThemesPath = "/site/themes"
 )
 
 type WebServer struct {

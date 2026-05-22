@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"k8s.io/apiserver/pkg/authentication/user"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/arrikto/oidc-authservice/common"
+	"k8s.io/apiserver/pkg/authentication/user"
+
+	"github.com/StatCan/zone-oidc-authservice/common"
 )
 
 // ExternalAuthorizer is responsible for handling authorization in an external
@@ -103,7 +104,7 @@ func (e ExternalAuthorizer) getUserInfo(r *http.Request, userinfo user.Info) Aut
 	}
 }
 
-// getRequestInfo creates a AuthorizationRequestInfo object for the current 
+// getRequestInfo creates a AuthorizationRequestInfo object for the current
 // context.
 func (e ExternalAuthorizer) getRequestInfo(r *http.Request) (request AuthorizationRequestInfo) {
 	host := strings.Split(r.Host, ":")
