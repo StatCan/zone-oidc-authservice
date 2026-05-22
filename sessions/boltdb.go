@@ -3,7 +3,7 @@ package sessions
 import (
 	"os"
 
-	"github.com/arrikto/oidc-authservice/common"
+	"github.com/StatCan/zone-oidc-authservice/common"
 	"github.com/boltdb/bolt"
 	"github.com/emirpasic/gods/sets/hashset"
 	"github.com/gorilla/sessions"

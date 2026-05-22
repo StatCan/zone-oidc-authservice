@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/arrikto/oidc-authservice/common"
+	"github.com/StatCan/zone-oidc-authservice/common"
 	"github.com/pkg/errors"
 	"golang.org/x/oauth2"
 )

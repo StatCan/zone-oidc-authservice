@@ -1,13 +1,13 @@
 package authenticators
 
 import (
-	"net/http"
-	"strings"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 
-	"github.com/arrikto/oidc-authservice/common"
-	"github.com/arrikto/oidc-authservice/oidc"
+	"github.com/StatCan/zone-oidc-authservice/common"
+	"github.com/StatCan/zone-oidc-authservice/oidc"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 )
@@ -21,8 +21,8 @@ type JWTTokenAuthenticator struct {
 	CaBundle    []byte
 	Provider    oidc.Provider
 	Audiences   []string // need client id to verify the id token
-	Issuer      string // need this for the local check
-	UserIDClaim string // retrieve the userid if the claim exists
+	Issuer      string   // need this for the local check
+	UserIDClaim string   // retrieve the userid if the claim exists
 	GroupsClaim string
 }
 
@@ -55,12 +55,11 @@ func (s *JWTTokenAuthenticator) AuthenticateRequest(r *http.Request) (*authentic
 				continue
 			}
 
-
 			// If a local check fails then AuthService will test
 			// the rest of the available authentication methods.
 			if localErr := s.performLocalChecks(bearer); localErr != nil {
 				logger.Errorf("JWT-token verification is not the appropriate" +
-							" authentication method for the received request.")
+					" authentication method for the received request.")
 				return nil, false, localErr
 			}
 
@@ -100,7 +99,7 @@ func (s *JWTTokenAuthenticator) AuthenticateRequest(r *http.Request) (*authentic
 }
 
 // Perform local checks for the issuer and the audiences
-func (s *JWTTokenAuthenticator) performLocalChecks(bearer string) (error){
+func (s *JWTTokenAuthenticator) performLocalChecks(bearer string) error {
 
 	// Verify that the retrieved Bearer token is a parsable JWT token
 	payload, localErr := common.ParseJWT(bearer)
@@ -113,7 +112,7 @@ func (s *JWTTokenAuthenticator) performLocalChecks(bearer string) (error){
 	var tokenLocalChecks jwtLocalChecks
 	if localErr = json.Unmarshal(payload, &tokenLocalChecks); localErr != nil { // Check next authenticator
 		localErr = fmt.Errorf("Could not retrieve the \"issuer\" and the \"audience\" claims" +
-					" from the Bearer Token.")
+			" from the Bearer Token.")
 		return localErr
 	}
 
@@ -124,9 +123,9 @@ func (s *JWTTokenAuthenticator) performLocalChecks(bearer string) (error){
 	}
 
 	// Check audiences
-	if !common.Contains(s.Audiences, tokenLocalChecks.Audiences){ // Check next authenticator
+	if !common.Contains(s.Audiences, tokenLocalChecks.Audiences) { // Check next authenticator
 		localErr = fmt.Errorf("The retrieved \"aud\" did not match with any of the" +
-					" expected audiences.")
+			" expected audiences.")
 		return localErr
 	}
 
@@ -136,21 +135,21 @@ func (s *JWTTokenAuthenticator) performLocalChecks(bearer string) (error){
 }
 
 // Retrieve the USERID_CLAIM and the GROUPS_CLAIM from the JWT access token
-func (s *JWTTokenAuthenticator) retrieveUserIDGroupsClaims(claims map[string]interface{}) (string, []string, error){
+func (s *JWTTokenAuthenticator) retrieveUserIDGroupsClaims(claims map[string]interface{}) (string, []string, error) {
 
-		if claims[s.UserIDClaim] == nil {
-			claimErr := fmt.Errorf("USERID_CLAIM not found in the JWT token")
-			return "", []string{}, claimErr
-		}
+	if claims[s.UserIDClaim] == nil {
+		claimErr := fmt.Errorf("USERID_CLAIM not found in the JWT token")
+		return "", []string{}, claimErr
+	}
 
-		groups := []string{}
-		groupsClaim := claims[s.GroupsClaim]
-		if groupsClaim == nil {
-			claimErr := fmt.Errorf("GROUPS_CLAIM not found in the JWT token")
-			return "", []string{}, claimErr
-		}
+	groups := []string{}
+	groupsClaim := claims[s.GroupsClaim]
+	if groupsClaim == nil {
+		claimErr := fmt.Errorf("GROUPS_CLAIM not found in the JWT token")
+		return "", []string{}, claimErr
+	}
 
-		groups = common.InterfaceSliceToStringSlice(groupsClaim.([]interface{}))
+	groups = common.InterfaceSliceToStringSlice(groupsClaim.([]interface{}))
 
-		return claims[s.UserIDClaim].(string), groups, nil
+	return claims[s.UserIDClaim].(string), groups, nil
 }
