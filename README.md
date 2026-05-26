@@ -1,10 +1,20 @@
-# OIDC AuthService
+# Zone OIDC AuthService
 
-This is a rewrite of the [ajmyyra/ambassador-auth-oidc](https://github.com/ajmyyra/ambassador-auth-oidc) project.
+This is a fork of the [oidc-authservice](https://github.com/arrikto/oidc-authservice).
 
 An AuthService is an HTTP Server that an API Gateway (eg Ambassador, Envoy) asks if an incoming request is authorized.
 
 For more information, see [this article](https://journal.arrikto.com/kubeflow-authentication-with-istio-dex-5eafdfac4782).
+
+## Changes from Upstream
+
+We decided to fork the upstream repository so that we could apply some customizations to make this authservice work better for our situation.
+
+Here is some of the main changes that we applied to the upstream code:
+
+- Updated the callback function to store a user's access token in a K8s secret in their namespace, so that it may be easily retrieved from their pods. Also updates the secret when the token gets refreshed.
+- Looks at the id token instead of the userinfo endpoint(which was failing) for the username value (EntraID email)
+- Adds the `/getPassthroughToken` endpoint to trigger the [On-Behalf-Of flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow) to return a new access token for the desired service.
 
 ## OpenID Connect
 
