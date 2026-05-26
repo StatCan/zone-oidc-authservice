@@ -4,8 +4,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
@@ -652,5 +655,128 @@ func (s *server) whitelistMiddleware(whitelist []string, isReady *abool.AtomicBo
 			// Server ready, continue.
 			handler.ServeHTTP(w, r)
 		})
+	}
+}
+
+// Zone: Creates an HTTP request object for the on-behalf-of flow
+// to get a new access token from an existing token
+func (s *server) getOnBehalfOfRequest(requestScope string, accessToken string) (*http.Request, error) {
+	data := url.Values{}
+	data.Set("client_id", s.oauth2Config.ClientID)
+	data.Set("client_secret", s.oauth2Config.ClientSecret)
+	data.Set("scope", requestScope)
+	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+	data.Set("assertion", accessToken)
+	data.Set("requested_token_use", "on_behalf_of")
+
+	req, err := http.NewRequest("POST", s.provider.Endpoint().TokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	return req, nil
+}
+
+// ZONE: Custom endpoint to do the on-behalf-of flow to acquire a new access token
+// by using the requester's original access token that was acquired when loging in.
+//
+// GET parameter:
+// - scope: the desired scope for the access token
+// Returns the access token for the given scope
+func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
+	logger := common.RequestLogger(r, logModuleInfo)
+
+	// Get the desired scope from the request parameters
+	requestScope := r.URL.Query().Get("scope")
+	if requestScope == "" {
+		logger.Errorf("Missing parameter: scope")
+		common.ReturnMessage(w, http.StatusBadRequest, "Missing parameter: scope")
+		return
+	}
+
+	// get source pod IP (no port)
+	sourceIP := strings.Split(r.RemoteAddr, ":")[0]
+
+	// Gets the namespace of the requesting pod using the source IP
+	pods, err := s.kubeclient.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{
+		FieldSelector: "status.podIP=" + sourceIP,
+	})
+	if err != nil {
+		logger.Errorf("Failed to get pods with remote address %s : %+v", sourceIP, err)
+		common.ReturnMessage(w, http.StatusForbidden, "Error: Unable to determine the source namespace of the request")
+		return
+	} else if pods == nil || pods != nil && pods.Size() == 0 {
+		logger.Errorf("No pods found with source IP %s", sourceIP)
+		common.ReturnMessage(w, http.StatusForbidden, "Error: Unable to determine the source namespace of the request")
+		return
+	}
+
+	namespace := pods.Items[0].Namespace
+
+	// Get the access token secret from the requesting namespace
+	secret, err := s.kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), accessTokenSecretName, metav1.GetOptions{})
+	if err != nil {
+		logger.Errorf("Error getting access token from secret in namespace %s: %v", namespace, err)
+		common.ReturnMessage(w, http.StatusInternalServerError, "Error: Unable to get initial access token for passthrough authentication")
+		return
+	}
+
+	// Get the on-behalf-of request
+	req, err := s.getOnBehalfOfRequest(requestScope, string(secret.Data["accessToken"]))
+	if err != nil {
+		logger.Errorf("Error creating on-behalf-of request: %v", err)
+		common.ReturnMessage(w, http.StatusInternalServerError, "Error: Unable to create on-behalf-of request")
+		return
+	}
+
+	// Send the on-behalf-of request
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+		logger.Errorf("Error while sending sending on-behalf-of request for namespace %s: %v", namespace, err)
+		common.ReturnMessage(w, http.StatusInternalServerError, "Error while sending on-behalf-of request")
+		return
+	}
+
+	defer res.Body.Close()
+
+	// if OBO response has error, return the error.
+	// if not, process the response
+	if res.StatusCode != http.StatusOK {
+		// Read the response body and convert to string
+		bodyBytes, err := io.ReadAll(res.Body)
+		if err != nil {
+			logger.Errorf("Error Error while processing on-behalf-of response for namespace %s: %+v", namespace, err)
+			common.ReturnMessage(w, http.StatusInternalServerError, "Error while processing on-behalf-of response")
+			return
+		}
+		bodyString := string(bodyBytes)
+
+		common.ReturnMessage(w, res.StatusCode, bodyString)
+		return
+	} else {
+		// Convert response body to JSON
+		decoder := json.NewDecoder(res.Body)
+		newToken := struct {
+			AccessToken  string `json:"access_token"`
+			TokenType    string `json:"token_type"`
+			ExpiresIn    int    `json:"expires_in"`
+			ExtExpiresIn int    `json:"ext_expires_in"`
+			Scope        string `json:"scope"`
+			RefreshToken string `json:"refresh_token"`
+			IdToken      string `json:"id_token"`
+		}{}
+		err = decoder.Decode(&newToken)
+		if err != nil {
+			logger.Errorf("Error decoding response for new access token: %v", err)
+			common.ReturnMessage(w, http.StatusInternalServerError, "Error processing on-behalf-of response")
+			return
+		}
+
+		// return the new on-behalf-of token for the desired scope
+		common.ReturnMessage(w, http.StatusOK, newToken.AccessToken)
+		return
 	}
 }
