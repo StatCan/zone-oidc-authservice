@@ -22,16 +22,13 @@ import (
 	"github.com/pkg/errors"
 	"github.com/tevino/abool"
 	"golang.org/x/oauth2"
-	v1 "k8s.io/api/core/v1"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/client-go/kubernetes"
 )
 
 const (
-	logModuleInfo         = "server"
-	accessTokenSecretName = "oidc-authservice-token"
+	logModuleInfo = "server"
 )
 
 var (
@@ -354,50 +351,6 @@ func getNamespaceFromEmail(email string) string {
 	return namespaceName
 }
 
-// Zone: Updates the K8s secret with the logged in user's access token and expiry time
-// Creates the secret if it doesn't exist. Updates it if it does already exist.
-func (s *server) updateAccessTokenSecret(namespace string, accessToken string, expiry time.Time) error {
-	// Get the access tokens secret
-	secret, err := s.kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), accessTokenSecretName, metav1.GetOptions{})
-	if err != nil {
-		// Return if it's a real error
-		if !k8serrors.IsNotFound(err) {
-			return err
-		} else {
-			// if the secret is not found, create it
-			secret = &v1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: accessTokenSecretName,
-				},
-				// stringData allows passing plain text; K8s encodes it to Base64 automatically
-				StringData: map[string]string{
-					"accessToken": accessToken,
-					"expiry":      expiry.String(),
-				},
-				Type: v1.SecretTypeOpaque,
-			}
-
-			_, err := s.kubeclient.CoreV1().Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	// if the secret exists, update it
-	secret.Data = map[string][]byte{
-		"accessToken": []byte(accessToken),
-		"expiry":      []byte(expiry.String()),
-	}
-
-	_, err = s.kubeclient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // callback is the handler responsible for exchanging the auth_code and retrieving an id_token.
 func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 
@@ -485,25 +438,27 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 		groups = common.InterfaceSliceToStringSlice(groupsClaim.([]interface{}))
 	}
 
+	// Get namespace from userID(which should be an email)
+	namespace := getNamespaceFromEmail(userID)
+
 	session.Values[sessions.UserSessionUserID] = userID
 	session.Values[sessions.UserSessionGroups] = groups
 	session.Values[sessions.UserSessionClaims] = claims
 	session.Values[sessions.UserSessionIDToken] = rawIDToken
 	session.Values[sessions.UserSessionOAuth2Tokens] = oauth2Tokens
+	session.Values[sessions.UserSessionNamespace] = namespace
 	if err := session.Save(r, w); err != nil {
 		logger.Errorf("Couldn't create user session: %v", err)
 		common.ReturnMessage(w, http.StatusInternalServerError, "Error creating user session")
 		return
 	}
 
-	// Get namespace from userID(email)
-	// Just log the errors, don't prevent users from logging in
-	namespace := getNamespaceFromEmail(userID)
+	// If the namespace couldn't be found, just log the errors, don't prevent users from logging in
 	if namespace != "" {
 		logger.Infof("Updating access token secret for namespace %s", namespace)
 
 		// create/update the secret in the namespace
-		err = s.updateAccessTokenSecret(namespace, oauth2Tokens.AccessToken, oauth2Tokens.Expiry)
+		err = common.UpdateAccessTokenSecret(s.kubeclient, namespace, oauth2Tokens)
 		if err != nil {
 			logger.Errorf("Error updating secret for access token in namespace %s: %v", namespace, err)
 		}
@@ -716,7 +671,7 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 	namespace := pods.Items[0].Namespace
 
 	// Get the access token secret from the requesting namespace
-	secret, err := s.kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), accessTokenSecretName, metav1.GetOptions{})
+	secret, err := s.kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), common.AccessTokenSecretName, metav1.GetOptions{})
 	if err != nil {
 		logger.Errorf("Error getting access token from secret in namespace %s: %v", namespace, err)
 		common.ReturnMessage(w, http.StatusInternalServerError, "Error: Unable to get initial access token for passthrough authentication")

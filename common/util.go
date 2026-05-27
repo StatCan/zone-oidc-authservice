@@ -19,7 +19,11 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
+	v1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/client-go/kubernetes"
 )
 
 var (
@@ -27,6 +31,10 @@ var (
 	HomepagePath     = "/site/homepage"
 	OIDCCallbackPath = "/oidc/callback"
 	VerifyEndpoint   = "/verify"
+)
+
+const (
+	AccessTokenSecretName = "oidc-authservice-token"
 )
 
 // JWTClaimOpts specifies the location of the user's identity inside a JWT's
@@ -70,7 +78,7 @@ func StandardLogger() *log.Logger {
 }
 
 func SetLogLevel(level string) {
-	if level =="FATAL" {
+	if level == "FATAL" {
 		log.SetLevel(log.FatalLevel)
 	} else if level == "ERROR" {
 		log.SetLevel(log.ErrorLevel)
@@ -269,4 +277,48 @@ func Contains(sli []string, ele []string) bool {
 		}
 	}
 	return false
+}
+
+// Zone: Updates the K8s secret with the logged in user's access token and expiry time
+// Creates the secret if it doesn't exist. Updates it if it does already exist.
+func UpdateAccessTokenSecret(kubeclient *kubernetes.Clientset, namespace string, oauth2Tokens *oauth2.Token) error {
+	// Get the access tokens secret
+	secret, err := kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), AccessTokenSecretName, metav1.GetOptions{})
+	if err != nil {
+		// Return if it's a real error
+		if !k8serrors.IsNotFound(err) {
+			return err
+		} else {
+			// if the secret is not found, create it
+			secret = &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: AccessTokenSecretName,
+				},
+				// stringData allows passing plain text; K8s encodes it to Base64 automatically
+				StringData: map[string]string{
+					"accessToken": oauth2Tokens.AccessToken,
+					"expiry":      oauth2Tokens.Expiry.String(),
+				},
+				Type: v1.SecretTypeOpaque,
+			}
+
+			_, err := kubeclient.CoreV1().Secrets(namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// if the secret exists, update it
+	secret.Data = map[string][]byte{
+		"accessToken": []byte(oauth2Tokens.AccessToken),
+		"expiry":      []byte(oauth2Tokens.Expiry.String()),
+	}
+
+	_, err = kubeclient.CoreV1().Secrets(namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
