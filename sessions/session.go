@@ -147,7 +147,8 @@ func SaveToken(session *sessions.Session, ctx context.Context,
 		if err := session.Save(r.WithContext(ctx), w); err != nil {
 			logger.Fatalf("Failed to update token in session: %v", err)
 		}
-		logger.Infof("Updated token in session")
+
+		logger.Infof("Updated token in session for namespace %s", session.Values[UserSessionNamespace].(string))
 	}
 	return newToken, new, err
 }
