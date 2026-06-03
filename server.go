@@ -324,8 +324,8 @@ func (s *server) authCodeFlowAuthenticationRequest(w http.ResponseWriter, r *htt
 		common.ReturnMessage(w, http.StatusInternalServerError, "Failed to save state in store.")
 		return
 	}
-
-	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(state), http.StatusFound)
+	selectAccountOption := oauth2.SetAuthURLParam("prompt", "select_account")
+	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(state, selectAccountOption), http.StatusFound)
 }
 
 // Zone: Helper function to convert the userID(email) into a namespace value
