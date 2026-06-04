@@ -11,6 +11,7 @@ import (
 	"golang.org/x/oauth2"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/client-go/kubernetes"
 )
 
 type SessionAuthenticator struct {
@@ -33,6 +34,9 @@ type SessionAuthenticator struct {
 	// provider is the OIDC Provider.
 	// Relevant only when strictSessionValidation is enabled.
 	Provider oidc.Provider
+
+	// ZONE: K8s client for creating k8s resource
+	Kubeclient *kubernetes.Clientset
 }
 
 func (sa *SessionAuthenticator) AuthenticateRequest(r *http.Request) (*authenticator.Response, bool, error) {
@@ -53,7 +57,7 @@ func (sa *SessionAuthenticator) AuthenticateRequest(r *http.Request) (*authentic
 	ctx := common.SetTLSContext(r.Context(), sa.CaBundle)
 	token := session.Values[sessions.UserSessionOAuth2Tokens].(oauth2.Token)
 
-	newToken, err := sessions.SaveToken(session, ctx, sa.Oauth2Config, &token, httptest.NewRecorder())
+	newToken, new, err := sessions.SaveToken(session, ctx, sa.Oauth2Config, &token, httptest.NewRecorder())
 	if err != nil {
 		logger.Errorf("Failed to refresh token: %v", err)
 		// Access token has expired
@@ -64,6 +68,15 @@ func (sa *SessionAuthenticator) AuthenticateRequest(r *http.Request) (*authentic
 			logger.Errorf("Failed to revoke tokens: %v", revokeErr)
 		}
 		return nil, false, err
+	}
+
+	// Zone: Update the k8s secret if the token is refreshed
+	namespace := session.Values[sessions.UserSessionNamespace].(string)
+	if new && namespace != "" {
+		err := common.UpdateAccessTokenSecret(sa.Kubeclient, namespace, newToken)
+		if err != nil {
+			logger.Errorf("Failed to update K8s secret after token refresh: %v", err)
+		}
 	}
 
 	// User is logged in

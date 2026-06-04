@@ -23,6 +23,7 @@ const (
 	UserSessionClaims       = "claims"
 	UserSessionIDToken      = "idtoken"
 	UserSessionOAuth2Tokens = "oauth2tokens"
+	UserSessionNamespace    = "namespace"
 )
 
 type Store sessions.Store
@@ -132,7 +133,7 @@ var mutex sync.Mutex
 // if they have expired and saves them to the session
 func SaveToken(session *sessions.Session, ctx context.Context,
 	config *oauth2.Config, token *oauth2.Token,
-	w http.ResponseWriter) (*oauth2.Token, error) {
+	w http.ResponseWriter) (*oauth2.Token, bool, error) {
 
 	logger := common.StandardLogger()
 
@@ -146,9 +147,10 @@ func SaveToken(session *sessions.Session, ctx context.Context,
 		if err := session.Save(r.WithContext(ctx), w); err != nil {
 			logger.Fatalf("Failed to update token in session: %v", err)
 		}
-		logger.Infof("Updated token in session")
+
+		logger.Infof("Updated token in session for namespace %s", session.Values[UserSessionNamespace].(string))
 	}
-	return newToken, err
+	return newToken, new, err
 }
 
 // InitiateSessionStores initiates both the required stores for the:

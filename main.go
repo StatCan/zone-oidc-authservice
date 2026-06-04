@@ -150,6 +150,7 @@ func main() {
 		CaBundle:                caBundle,
 		Provider:                provider,
 		Oauth2Config:            oauth2Config,
+		Kubeclient:              kubeclient,
 	}
 
 	idTokenAuthenticator := &authenticators.IDTokenAuthenticator{
