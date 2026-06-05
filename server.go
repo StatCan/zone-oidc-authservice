@@ -776,7 +776,7 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// return the new on-behalf-of token for the desired scope
-		common.ReturnMessage(w, http.StatusOK, newToken.AccessToken)
+		common.ReturnJSONMessage(w, http.StatusOK, newToken)
 		return
 	}
 }
