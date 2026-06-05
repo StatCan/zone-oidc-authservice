@@ -18,6 +18,7 @@ import (
 	"github.com/StatCan/zone-oidc-authservice/common"
 	"github.com/StatCan/zone-oidc-authservice/oidc"
 	"github.com/StatCan/zone-oidc-authservice/sessions"
+	"github.com/dgrijalva/jwt-go"
 	cache "github.com/patrickmn/go-cache"
 	"github.com/pkg/errors"
 	"github.com/tevino/abool"
@@ -643,6 +644,8 @@ func (s *server) getOnBehalfOfRequest(requestScope string, accessToken string) (
 func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 	logger := common.RequestLogger(r, logModuleInfo)
 
+	logger.Info("Getting a passthrough token...")
+
 	// Get the desired scope from the request parameters
 	requestScope := r.URL.Query().Get("scope")
 	if requestScope == "" {
@@ -703,7 +706,7 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 		// Read the response body and convert to string
 		bodyBytes, err := io.ReadAll(res.Body)
 		if err != nil {
-			logger.Errorf("Error Error while processing on-behalf-of response for namespace %s: %+v", namespace, err)
+			logger.Errorf("Error while processing on-behalf-of response for namespace %s: %v", namespace, err)
 			common.ReturnMessage(w, http.StatusInternalServerError, "Error while processing on-behalf-of response")
 			return
 		}
@@ -717,11 +720,10 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 		newToken := struct {
 			AccessToken  string `json:"access_token"`
 			TokenType    string `json:"token_type"`
-			ExpiresIn    int    `json:"expires_in"`
-			ExtExpiresIn int    `json:"ext_expires_in"`
+			ExpiresIn    int64  `json:"expires_in"`
 			Scope        string `json:"scope"`
 			RefreshToken string `json:"refresh_token"`
-			IdToken      string `json:"id_token"`
+			ExpiresOn    int64  `json:"expires_on"` // Not present in response body
 		}{}
 		err = decoder.Decode(&newToken)
 		if err != nil {
@@ -730,8 +732,32 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Sets a default value for the expiry date based on the "expires_in" seconds value
+		newToken.ExpiresOn = time.Now().Unix() + newToken.ExpiresIn
+
+		// Get the "exp" claim from the new access token
+		// Parse the token claims
+		token, _, err := new(jwt.Parser).ParseUnverified(newToken.AccessToken, jwt.MapClaims{})
+		if err != nil {
+			logger.Errorf("Error parsing On-Behalf-Of JWT access token: %v", err)
+		} else {
+			if claims, ok := token.Claims.(jwt.MapClaims); ok {
+				// Check for the "exp" claim in the token
+				exp, ok := claims["exp"].(float64)
+				if !ok {
+					logger.Error("Failed to convert \"exp\" token value to float64")
+				} else {
+					// Set the "exp" claim value for the passthrough token response
+					newToken.ExpiresOn = int64(exp)
+				}
+			} else {
+				// Log error if claims are not ok
+				logger.Error("Error getting claims from access token")
+			}
+		}
+
 		// return the new on-behalf-of token for the desired scope
-		common.ReturnMessage(w, http.StatusOK, newToken.AccessToken)
+		common.ReturnJSONMessage(w, http.StatusOK, newToken)
 		return
 	}
 }
