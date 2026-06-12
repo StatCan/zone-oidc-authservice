@@ -3,14 +3,23 @@
 package main
 
 import (
+	"context"
 	"encoding/gob"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
 	"github.com/coreos/go-oidc"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/sessions"
 	"github.com/pkg/errors"
 	"github.com/tevino/abool"
 	"golang.org/x/oauth2"
-	"net/http"
-	"strings"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -19,6 +28,8 @@ const (
 	userSessionClaims       = "claims"
 	userSessionIDToken      = "idtoken"
 	userSessionOAuth2Tokens = "oauth2tokens"
+
+	AccessTokenSecretName = "oidc-authservice-token"
 )
 
 func init() {
@@ -53,6 +64,7 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request) {
 		returnStatus(w, http.StatusInternalServerError, "Couldn't get user session.")
 		return
 	}
+
 	// User is logged in
 	if !session.IsNew {
 		// Add userid header
@@ -128,25 +140,18 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 
 	// Verifying received ID token
 	verifier := s.provider.Verifier(&oidc.Config{ClientID: s.oauth2Config.ClientID})
-	_, err = verifier.Verify(ctx, rawIDToken)
+	verifiedIdToken, err := verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		logger.Errorf("Not able to verify ID token: %v", err)
 		returnStatus(w, http.StatusInternalServerError, "Unable to verify ID token.")
 		return
 	}
 
-	// UserInfo endpoint to get claims
+	// Get the claims from the idtoken
 	claims := map[string]interface{}{}
-	userInfo, err := s.provider.UserInfo(ctx, oauth2.StaticTokenSource(oauth2Tokens))
-	if err != nil {
-		logger.Errorf("Not able to fetch userinfo: %v", err)
-		returnStatus(w, http.StatusInternalServerError, "Not able to fetch userinfo.")
-		return
-	}
-
-	if err = userInfo.Claims(&claims); err != nil {
-		logger.Println("Problem getting userinfo claims:", err.Error())
-		returnStatus(w, http.StatusInternalServerError, "Not able to fetch userinfo claims.")
+	if err := verifiedIdToken.Claims(&claims); err != nil {
+		logger.Errorf("Not able to get ID token claims: %v", err)
+		returnStatus(w, http.StatusInternalServerError, "Not able to get ID token claims.")
 		return
 	}
 
@@ -155,7 +160,15 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	session.Options.MaxAge = s.sessionMaxAgeSeconds
 	session.Options.Path = "/"
 
-	session.Values[userSessionUserID] = claims[s.userIDOpts.claim].(string)
+	userID, ok := claims[s.userIDOpts.claim].(string)
+	if !ok {
+		logger.Errorf("Couldn't find claim `%s' in claims `%v'", s.userIDOpts.claim, claims)
+		returnStatus(w, http.StatusInternalServerError,
+			fmt.Sprintf("Couldn't find userID claim in `%s' in userinfo.", s.userIDOpts.claim))
+		return
+	}
+
+	session.Values[userSessionUserID] = userID
 	session.Values[userSessionClaims] = claims
 	session.Values[userSessionIDToken] = rawIDToken
 	session.Values[userSessionOAuth2Tokens] = oauth2Tokens
@@ -163,7 +176,12 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 		logger.Errorf("Couldn't create user session: %v", err)
 	}
 
-	logger.Info("Login validated with ID token, redirecting.")
+	// ZONE: Get the authservice cookie value to store it in a k8s secret for easy access from pods
+	if err := setupZoneK8sSecret(w, userID, s.kubeclient, oauth2Tokens); err != nil {
+		logger.Errorf("Couldn't create or update the oidc-authservice secret: %v", err)
+	}
+
+	logger.Infof("Login validated for %s with ID token, redirecting.", userID)
 
 	// Getting original destination from DB with state
 	var destination = state.origURL
@@ -256,5 +274,183 @@ func whitelistMiddleware(whitelist []string, isReady *abool.AtomicBool) func(htt
 			// Server ready, continue.
 			handler.ServeHTTP(w, r)
 		})
+	}
+}
+
+// Zone: Creates an HTTP request object for the on-behalf-of flow
+// to get a new access token from an existing token
+func (s *server) getOnBehalfOfRequest(requestScope string, accessToken string) (*http.Request, error) {
+	data := url.Values{}
+	data.Set("client_id", s.oauth2Config.ClientID)
+	data.Set("client_secret", s.oauth2Config.ClientSecret)
+	data.Set("scope", requestScope)
+	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+	data.Set("assertion", accessToken)
+	data.Set("requested_token_use", "on_behalf_of")
+
+	req, err := http.NewRequest("POST", s.provider.Endpoint().TokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	return req, nil
+}
+
+// ZONE: Custom endpoint to do the on-behalf-of flow to acquire a new access token
+// by using the requester's original access token that was acquired when loging in.
+//
+// GET parameter:
+// - scope: the desired scope for the access token
+// Returns the access token for the given scope
+func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
+	logger := loggerForRequest(r)
+
+	logger.Info("Getting a passthrough token...")
+
+	// Get the desired scope from the request parameters
+	requestScope := r.URL.Query().Get("scope")
+	if requestScope == "" {
+		logger.Errorf("Missing parameter: scope")
+		returnStatus(w, http.StatusBadRequest, "Missing parameter: scope")
+		return
+	}
+
+	// get source pod IP (no port)
+	sourceIP := strings.Split(r.RemoteAddr, ":")[0]
+
+	// Gets the namespace of the requesting pod using the source IP
+	pods, err := s.kubeclient.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{
+		FieldSelector: "status.podIP=" + sourceIP,
+	})
+	if err != nil {
+		logger.Errorf("Failed to get pods with remote address %s : %+v", sourceIP, err)
+		returnStatus(w, http.StatusForbidden, "Error: Unable to determine the source namespace of the request")
+		return
+	} else if pods == nil || pods != nil && pods.Size() == 0 {
+		logger.Errorf("No pods found with source IP %s", sourceIP)
+		returnStatus(w, http.StatusForbidden, "Error: Unable to determine the source namespace of the request")
+		return
+	}
+
+	namespace := pods.Items[0].Namespace
+
+	// Get the access token secret from the requesting namespace
+	secret, err := s.kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), AccessTokenSecretName, metav1.GetOptions{})
+	if err != nil {
+		logger.Errorf("Error getting access token from secret in namespace %s: %v", namespace, err)
+		returnStatus(w, http.StatusInternalServerError, "Error: Unable to get initial access token for passthrough authentication")
+		return
+	}
+
+	// Get the session from the cookie value stored in the k8s secret
+	r.AddCookie(&http.Cookie{
+		Name:  userSessionCookie,
+		Value: string(secret.Data[userSessionCookie]),
+	})
+
+	session, err := s.store.Get(r, userSessionCookie)
+	if err != nil {
+		logger.Errorf("Couldn't get user session: %v", err)
+		returnStatus(w, http.StatusInternalServerError, "Couldn't get user session.")
+		return
+	}
+	if session.IsNew {
+		logger.Error("Failed to retrieve a valid session")
+		returnStatus(w, http.StatusInternalServerError, "Failed to retrieve a valid session")
+		return
+	}
+
+	token := session.Values[userSessionOAuth2Tokens].(oauth2.Token)
+
+	ctx := setTLSContext(r.Context(), s.caBundle)
+
+	tokenSource := s.oauth2Config.TokenSource(ctx, &token)
+	newToken, err := tokenSource.Token()
+	if err != nil {
+		logger.Errorf("Failed to refresh token: %v", err)
+		returnStatus(w, http.StatusInternalServerError, fmt.Sprintf("Failed to refresh token: %v", err))
+		return
+	}
+
+	// Get the on-behalf-of request
+	req, err := s.getOnBehalfOfRequest(requestScope, newToken.AccessToken)
+	if err != nil {
+		logger.Errorf("Error creating on-behalf-of request: %v", err)
+		returnStatus(w, http.StatusInternalServerError, "Error: Unable to create on-behalf-of request")
+		return
+	}
+
+	// Send the on-behalf-of request
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+		logger.Errorf("Error while sending sending on-behalf-of request for namespace %s: %v", namespace, err)
+		returnStatus(w, http.StatusInternalServerError, "Error while sending on-behalf-of request")
+		return
+	}
+
+	defer res.Body.Close()
+
+	// if OBO response has error, return the error.
+	// if not, process the response
+	if res.StatusCode != http.StatusOK {
+		// Read the response body and convert to string
+		bodyBytes, err := io.ReadAll(res.Body)
+		if err != nil {
+			logger.Errorf("Error while processing on-behalf-of response for namespace %s: %v", namespace, err)
+			returnStatus(w, http.StatusInternalServerError, "Error while processing on-behalf-of response")
+			return
+		}
+		bodyString := string(bodyBytes)
+
+		returnStatus(w, res.StatusCode, bodyString)
+		return
+	} else {
+		// Convert response body to JSON
+		decoder := json.NewDecoder(res.Body)
+		newToken := struct {
+			AccessToken  string `json:"access_token"`
+			TokenType    string `json:"token_type"`
+			ExpiresIn    int64  `json:"expires_in"`
+			Scope        string `json:"scope"`
+			RefreshToken string `json:"refresh_token"`
+			ExpiresOn    int64  `json:"expires_on"` // Not present in response body
+		}{}
+		err = decoder.Decode(&newToken)
+		if err != nil {
+			logger.Errorf("Error decoding response for new access token: %v", err)
+			returnStatus(w, http.StatusInternalServerError, "Error processing on-behalf-of response")
+			return
+		}
+
+		// Sets a default value for the expiry date based on the "expires_in" seconds value
+		newToken.ExpiresOn = time.Now().Unix() + newToken.ExpiresIn
+
+		// Get the "exp" claim from the new access token
+		// Parse the token claims
+		token, _, err := new(jwt.Parser).ParseUnverified(newToken.AccessToken, jwt.MapClaims{})
+		if err != nil {
+			logger.Errorf("Error parsing On-Behalf-Of JWT access token: %v", err)
+		} else {
+			if claims, ok := token.Claims.(jwt.MapClaims); ok {
+				// Check for the "exp" claim in the token
+				exp, ok := claims["exp"].(float64)
+				if !ok {
+					logger.Error("Failed to convert \"exp\" token value to float64")
+				} else {
+					// Set the "exp" claim value for the passthrough token response
+					newToken.ExpiresOn = int64(exp)
+				}
+			} else {
+				// Log error if claims are not ok
+				logger.Error("Error getting claims from access token")
+			}
+		}
+
+		// return the new on-behalf-of token for the desired scope
+		returnJSONMessage(w, http.StatusOK, newToken)
+		return
 	}
 }

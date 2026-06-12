@@ -4,6 +4,13 @@ package main
 
 import (
 	"context"
+	"io/ioutil"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/boltdb/bolt"
 	"github.com/coreos/go-oidc"
 	"github.com/gorilla/handlers"
@@ -14,12 +21,8 @@ import (
 	"github.com/yosssi/boltstore/reaper"
 	"github.com/yosssi/boltstore/store"
 	"golang.org/x/oauth2"
-	"io/ioutil"
-	"net/http"
-	"os"
-	"strconv"
-	"strings"
-	"time"
+	"k8s.io/client-go/kubernetes"
+	clientconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 // Option Defaults
@@ -45,6 +48,9 @@ type server struct {
 	sessionMaxAgeSeconds int
 	userIDOpts
 	caBundle []byte
+
+	// ZONE: K8s client for creating k8s resource
+	kubeclient *kubernetes.Clientset
 }
 
 type userIDOpts struct {
@@ -99,6 +105,7 @@ func main() {
 
 	// Register handlers for routes
 	router := mux.NewRouter()
+	router.HandleFunc("/authservice/getPassthroughToken", s.getPassthroughToken).Methods(http.MethodGet)
 	router.HandleFunc("/login/oidc", s.callback).Methods(http.MethodGet)
 	router.HandleFunc("/logout", s.logout).Methods(http.MethodGet)
 	router.PathPrefix("/").HandlerFunc(s.authenticate)
@@ -164,6 +171,10 @@ func main() {
 		log.Fatalf("Couldn't convert session MaxAge to int: %v", err)
 	}
 
+	// Zone: setup the kubernetes client
+	restConfig, err := clientconfig.GetConfig()
+	kubeclient := kubernetes.NewForConfigOrDie(restConfig)
+
 	// Set the server values.
 	// The isReady atomic variable should protect it from concurrency issues.
 
@@ -187,6 +198,7 @@ func main() {
 		},
 		sessionMaxAgeSeconds: sessionMaxAgeSeconds,
 		caBundle:             caBundle,
+		kubeclient:           kubeclient,
 	}
 
 	// Setup complete, mark server ready
