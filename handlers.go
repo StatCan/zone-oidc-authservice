@@ -88,7 +88,8 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(id), http.StatusFound)
+	selectAccountOption := oauth2.SetAuthURLParam("prompt", "select_account")
+	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(id, selectAccountOption), http.StatusFound)
 }
 
 // callback is the handler responsible for exchanging the auth_code and retrieving an id_token.
