@@ -49,7 +49,7 @@ type server struct {
 	userIDOpts
 	caBundle []byte
 
-	// ZONE: K8s client for creating k8s resource
+	// ZONE: K8s client for creating k8s resources
 	kubeclient *kubernetes.Clientset
 }
 

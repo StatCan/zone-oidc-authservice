@@ -64,7 +64,6 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request) {
 		returnStatus(w, http.StatusInternalServerError, "Couldn't get user session.")
 		return
 	}
-
 	// User is logged in
 	if !session.IsNew {
 		// Add userid header
@@ -147,7 +146,9 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the claims from the idtoken
+	// Get the claims from the idtoken.
+	// ZONE: We changed this because getting the claims from the userInfo
+	// with s.provider.UserInfo like in upstream was failing
 	claims := map[string]interface{}{}
 	if err := verifiedIdToken.Claims(&claims); err != nil {
 		logger.Errorf("Not able to get ID token claims: %v", err)
@@ -160,6 +161,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	session.Options.MaxAge = s.sessionMaxAgeSeconds
 	session.Options.Path = "/"
 
+	// make sure userId claim was retrieved succesfully
 	userID, ok := claims[s.userIDOpts.claim].(string)
 	if !ok {
 		logger.Errorf("Couldn't find claim `%s' in claims `%v'", s.userIDOpts.claim, claims)
@@ -176,7 +178,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 		logger.Errorf("Couldn't create user session: %v", err)
 	}
 
-	// ZONE: Get the authservice cookie value to store it in a k8s secret for easy access from pods
+	// ZONE: Get the authservice cookie value to store it in a k8s secret for easy access with calls from notebook pods
 	if err := setupZoneK8sSecret(w, userID, s.kubeclient, oauth2Tokens); err != nil {
 		logger.Errorf("Couldn't create or update the oidc-authservice secret: %v", err)
 	}
@@ -278,7 +280,7 @@ func whitelistMiddleware(whitelist []string, isReady *abool.AtomicBool) func(htt
 }
 
 // Zone: Creates an HTTP request object for the on-behalf-of flow
-// to get a new access token from an existing token
+// to get a new access token from an existing token.
 func (s *server) getOnBehalfOfRequest(requestScope string, accessToken string) (*http.Request, error) {
 	data := url.Values{}
 	data.Set("client_id", s.oauth2Config.ClientID)
@@ -298,12 +300,13 @@ func (s *server) getOnBehalfOfRequest(requestScope string, accessToken string) (
 	return req, nil
 }
 
-// ZONE: Custom endpoint to do the on-behalf-of flow to acquire a new access token
-// by using the requester's original access token that was acquired when loging in.
-//
-// GET parameter:
-// - scope: the desired scope for the access token
-// Returns the access token for the given scope
+// ZONE: Custom endpoint for the on-behalf-of flow to acquire a new access token.
+// This endpoint is expected to be called from a k8s pod, and will try to get the source namespace.
+// Gets the authservice session from the value in a k8s secret from the source namespace.
+// Refreshes the user's access token from their session if needed before doing OBO.
+// This avoids saving the refreshed access token in the session to avoid a bug that would wipe the session after saving.
+// Requires a "scope" GET parameter to be passed to the OBO flow.
+// Returns the access token response from the OBO call plus the "exp" claim value to be used by the Zone token broker in our notebook images
 func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 	logger := loggerForRequest(r)
 
@@ -344,12 +347,14 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the session from the cookie value stored in the k8s secret
+	// Get the session from the cookie value stored in the k8s secret and add it to the request
+	// This step is needed for store.Get to retrieve and decrypt the sessionID value
 	r.AddCookie(&http.Cookie{
 		Name:  userSessionCookie,
 		Value: string(secret.Data[userSessionCookie]),
 	})
 
+	// Get the session object for the requesting user
 	session, err := s.store.Get(r, userSessionCookie)
 	if err != nil {
 		logger.Errorf("Couldn't get user session: %v", err)
@@ -362,10 +367,11 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := session.Values[userSessionOAuth2Tokens].(oauth2.Token)
-
 	ctx := setTLSContext(r.Context(), s.caBundle)
 
+	// Get the initial access token from the user's session
+	token := session.Values[userSessionOAuth2Tokens].(oauth2.Token)
+	// Refreshes the initial access token if needed
 	tokenSource := s.oauth2Config.TokenSource(ctx, &token)
 	newToken, err := tokenSource.Token()
 	if err != nil {
@@ -374,7 +380,7 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the on-behalf-of request
+	// Get the on-behalf-of request object
 	req, err := s.getOnBehalfOfRequest(requestScope, newToken.AccessToken)
 	if err != nil {
 		logger.Errorf("Error creating on-behalf-of request: %v", err)
@@ -393,8 +399,7 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 
 	defer res.Body.Close()
 
-	// if OBO response has error, return the error.
-	// if not, process the response
+	// return the error if the response is not 200
 	if res.StatusCode != http.StatusOK {
 		// Read the response body and convert to string
 		bodyBytes, err := io.ReadAll(res.Body)
@@ -407,50 +412,53 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 
 		returnStatus(w, res.StatusCode, bodyString)
 		return
-	} else {
-		// Convert response body to JSON
-		decoder := json.NewDecoder(res.Body)
-		newToken := struct {
-			AccessToken  string `json:"access_token"`
-			TokenType    string `json:"token_type"`
-			ExpiresIn    int64  `json:"expires_in"`
-			Scope        string `json:"scope"`
-			RefreshToken string `json:"refresh_token"`
-			ExpiresOn    int64  `json:"expires_on"` // Not present in response body
-		}{}
-		err = decoder.Decode(&newToken)
-		if err != nil {
-			logger.Errorf("Error decoding response for new access token: %v", err)
-			returnStatus(w, http.StatusInternalServerError, "Error processing on-behalf-of response")
-			return
-		}
+	}
 
-		// Sets a default value for the expiry date based on the "expires_in" seconds value
-		newToken.ExpiresOn = time.Now().Unix() + newToken.ExpiresIn
-
-		// Get the "exp" claim from the new access token
-		// Parse the token claims
-		token, _, err := new(jwt.Parser).ParseUnverified(newToken.AccessToken, jwt.MapClaims{})
-		if err != nil {
-			logger.Errorf("Error parsing On-Behalf-Of JWT access token: %v", err)
-		} else {
-			if claims, ok := token.Claims.(jwt.MapClaims); ok {
-				// Check for the "exp" claim in the token
-				exp, ok := claims["exp"].(float64)
-				if !ok {
-					logger.Error("Failed to convert \"exp\" token value to float64")
-				} else {
-					// Set the "exp" claim value for the passthrough token response
-					newToken.ExpiresOn = int64(exp)
-				}
-			} else {
-				// Log error if claims are not ok
-				logger.Error("Error getting claims from access token")
-			}
-		}
-
-		// return the new on-behalf-of token for the desired scope
-		returnJSONMessage(w, http.StatusOK, newToken)
+	// Convert response body to JSON
+	decoder := json.NewDecoder(res.Body)
+	tokenResponse := struct {
+		AccessToken  string `json:"access_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int64  `json:"expires_in"`
+		Scope        string `json:"scope"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresOn    int64  `json:"expires_on"` // Not actually in response body
+	}{}
+	err = decoder.Decode(&tokenResponse)
+	if err != nil {
+		logger.Errorf("Error decoding response for new access token: %v", err)
+		returnStatus(w, http.StatusInternalServerError, "Error processing on-behalf-of response")
 		return
 	}
+
+	// Sets a default value for the expiry date based on the "expires_in" seconds value
+	tokenResponse.ExpiresOn = time.Now().Unix() + tokenResponse.ExpiresIn
+
+	// There may be a few seconds of inaccuracy in the default expiresOn value
+	// so we try to get the real value from the token response's "exp" claim.
+	parsedToken, _, err := new(jwt.Parser).ParseUnverified(tokenResponse.AccessToken, jwt.MapClaims{})
+
+	// if there is an error parsing the token for the "exp" claim, just log the error.
+	// the response will use the default set value
+	if err != nil {
+		logger.Errorf("Error parsing On-Behalf-Of JWT access token: %v", err)
+	} else {
+		if claims, ok := parsedToken.Claims.(jwt.MapClaims); ok {
+			// Check for the "exp" claim in the token
+			exp, ok := claims["exp"].(float64)
+			if !ok {
+				logger.Error("Failed to convert \"exp\" token value to float64")
+			} else {
+				// Set the "exp" claim value for the passthrough token response
+				tokenResponse.ExpiresOn = int64(exp)
+			}
+		} else {
+			// Log error if claims are not ok
+			logger.Error("Error getting claims from access token")
+		}
+	}
+
+	// return the new on-behalf-of token for the desired scope
+	returnJSONMessage(w, http.StatusOK, tokenResponse)
+	return
 }

@@ -166,24 +166,21 @@ func getNamespaceFromEmail(email string) string {
 	return namespaceName
 }
 
-// Zone: Updates the K8s secret with the logged in user's access token and expiry time
-// Creates the secret if it doesn't exist. Updates it if it does already exist.
-func updateAccessTokenSecret(kubeclient *kubernetes.Clientset, namespace string, oauth2Tokens *oauth2.Token, cookieValue string) error {
+// Zone: Updates the K8s secret for the authenticated user's with their authservice session cookie value and the access token's expiry time.
+// If the secret exist already, then create it.
+func updateZoneSecret(kubeclient *kubernetes.Clientset, namespace string, tokenExpiry string, cookieValue string) error {
 	// Get the access tokens secret
 	secret, err := kubeclient.CoreV1().Secrets(namespace).Get(context.TODO(), AccessTokenSecretName, metav1.GetOptions{})
 	if err != nil {
-		// Return if it's a real error
-		if !k8serrors.IsNotFound(err) {
-			return err
-		} else {
-			// if the secret is not found, create it
+		// if the secret is not found, proceed to create it
+		if k8serrors.IsNotFound(err) {
 			secret = &v1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: AccessTokenSecretName,
 				},
 				// stringData allows passing plain text; K8s encodes it to Base64 automatically
 				StringData: map[string]string{
-					"expiry":          oauth2Tokens.Expiry.String(),
+					"expiry":          tokenExpiry,
 					userSessionCookie: cookieValue,
 				},
 				Type: v1.SecretTypeOpaque,
@@ -193,12 +190,15 @@ func updateAccessTokenSecret(kubeclient *kubernetes.Clientset, namespace string,
 			if err != nil {
 				return err
 			}
+		} else {
+			// return the error if it is not a NotFound error
+			return err
 		}
 	}
 
-	// if the secret exists, update it
+	// if the secret exists, just update it
 	secret.Data = map[string][]byte{
-		"expiry":          []byte(oauth2Tokens.Expiry.String()),
+		"expiry":          []byte(tokenExpiry),
 		userSessionCookie: []byte(cookieValue),
 	}
 
@@ -210,9 +210,19 @@ func updateAccessTokenSecret(kubeclient *kubernetes.Clientset, namespace string,
 	return nil
 }
 
+// Zone: Gets the namespace of the requesting user
+// and the authservice session ID value from the cookies of the ResponseWriter.
+// Proceeds to create/update the user's authservice k8s secret.
 func setupZoneK8sSecret(w http.ResponseWriter, userID string, kubeclient *kubernetes.Clientset, oauth2Tokens *oauth2.Token) error {
+	// Get namespace from userID(which should be an email)
+	namespace := getNamespaceFromEmail(userID)
+	if namespace == "" {
+		return fmt.Errorf("Couldn't get namespace for userID: %s. Skipping creating the K8s secret", userID)
+	}
+
 	// The authservice cookie should be the only one set
 	rawCookie := w.Header().Values("Set-Cookie")[0]
+	// Parse the raw string value into a cookie object
 	cookie, err := http.ParseSetCookie(rawCookie)
 	if err != nil {
 		return fmt.Errorf("Failed to parse the session cookie: %v", err)
@@ -220,13 +230,8 @@ func setupZoneK8sSecret(w http.ResponseWriter, userID string, kubeclient *kubern
 		return errors.New("Failed to get the authservice cookie")
 	}
 
-	// Get namespace from userID(which should be an email)
-	namespace := getNamespaceFromEmail(userID)
-	if namespace == "" {
-		return fmt.Errorf("Couldn't get namespace for userID: %s. Skipping creating the K8s secret", userID)
-	}
-
-	err = updateAccessTokenSecret(kubeclient, namespace, oauth2Tokens, cookie.Value)
+	// Create or update the authservice k8s secret
+	err = updateZoneSecret(kubeclient, namespace, oauth2Tokens.Expiry.String(), cookie.Value)
 	if err != nil {
 		return fmt.Errorf("Error updating secret for access token in namespace %s: %v", namespace, err)
 	}

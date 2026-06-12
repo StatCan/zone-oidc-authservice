@@ -10,9 +10,11 @@ For more information, see [this article](https://journal.arrikto.com/kubeflow-au
 
 We decided to fork the upstream repository so that we could apply some customizations to make this authservice work better for our situation.
 
+When testing from master, there was an issue identified when refreshing access tokens that would wipe a user's session. Since we didn't have this issue with our current old image of the oidc-authservice, we decided to build our customizations from [this old commit](https://github.com/arrikto/oidc-authservice/commit/b3127a91cc4806d72f865fe0dcdb8ebf881a7863#diff-56307bdb7ded67ebe516f562b90384407b21b2d34e8b5766b42602e1fb9705f0), which seemed to be the most accurate commit of where the old image was built from.
+
 Here is some of the main changes that we applied to the upstream code:
 
-- Updated the callback function to store a user's access token in a K8s secret in their namespace, so that it may be easily retrieved from their pods. Also updates the secret when the token gets refreshed.
+- Updated the callback function to store a user's session ID cookie value in a K8s secret in their namespace, so that it may be easily retrieved from their pods.
 - Looks at the id token instead of the userinfo endpoint(which was failing) for the username value (EntraID email)
 - Adds the `/getPassthroughToken` endpoint to trigger the [On-Behalf-Of flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow) to return a new access token for the desired service.
 - Adds the `prompt: select_account` parameter to the `/authorize` HTTP request to our OIDC provider to align with our old image
