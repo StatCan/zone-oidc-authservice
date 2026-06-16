@@ -8,7 +8,7 @@ on:
 env:
   REGISTRY_NAME: k8scc01covidacr.azurecr.io
   IMAGE_NAME: oidc-authservice:${{ github.sha }}
-  TRIVY_VERSION: "v0.69.2"
+  TRIVY_VERSION: "v0.71.1"
   TRIVY_DATABASES: '"ghcr.io/aquasecurity/trivy-db:2","public.ecr.aws/aquasecurity/trivy-db"'
   TRIVY_JAVA_DATABASES: '"ghcr.io/aquasecurity/trivy-java-db:1","public.ecr.aws/aquasecurity/trivy-java-db"'
   TRIVY_MAX_RETRIES: 5
@@ -82,5 +82,5 @@ jobs:
     - name: Push to ACR
       run: |
         docker pull localhost:5000/${{ env.IMAGE_NAME }}
-        docker tag localhost:5000/${{ env.IMAGE_NAME }} ${{ env.REGISTRY_name }}/${{ env.IMAGE_NAME }}
+        docker tag localhost:5000/${{ env.IMAGE_NAME }} ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}
         docker push ${{ env.REGISTRY_name }}/${{ env.IMAGE_NAME }}
