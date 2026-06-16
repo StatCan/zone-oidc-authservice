@@ -83,4 +83,4 @@ jobs:
       run: |
         docker pull localhost:5000/${{ env.IMAGE_NAME }}
         docker tag localhost:5000/${{ env.IMAGE_NAME }} ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}
-        docker push ${{ env.REGISTRY_name }}/${{ env.IMAGE_NAME }}
+        docker push ${{ env.REGISTRY_NAME }}/${{ env.IMAGE_NAME }}
