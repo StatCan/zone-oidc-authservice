@@ -18,6 +18,7 @@ Here is some of the main changes that we applied to the upstream code:
 - Looks at the id token instead of the userinfo endpoint(which was failing) for the username value (EntraID email)
 - Adds the `/getPassthroughToken` endpoint to trigger the [On-Behalf-Of flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow) to return a new access token for the desired service.
 - Adds the `prompt: select_account` parameter to the `/authorize` HTTP request to our OIDC provider to align with our old image
+- Added a workflow to build and push the image to our Azure Container Registry
 
 ## OpenID Connect
 
