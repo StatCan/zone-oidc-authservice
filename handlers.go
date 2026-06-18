@@ -180,7 +180,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ZONE: Get the authservice cookie value to store it in a k8s secret for easy access with calls from notebook pods
-	if err := setupZoneK8sSecret(w, userID, s.kubeclient, oauth2Tokens); err != nil {
+	if err := setupZoneK8sSecret(w, userID, s.kubeclient, s.roleBindingLister, oauth2Tokens); err != nil {
 		logger.Errorf("Couldn't create or update the oidc-authservice secret: %v", err)
 	}
 

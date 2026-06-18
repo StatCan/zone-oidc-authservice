@@ -17,7 +17,10 @@ require (
 	k8s.io/client-go v0.36.1
 )
 
-require gopkg.in/go-jose/go-jose.v2 v2.6.3 // indirect
+require (
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	gopkg.in/go-jose/go-jose.v2 v2.6.3 // indirect
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
