@@ -180,7 +180,7 @@ func (s *server) callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ZONE: Get the authservice cookie value to store it in a k8s secret for easy access with calls from notebook pods
-	if err := setupZoneK8sSecret(w, userID, s.kubeclient, oauth2Tokens); err != nil {
+	if err := setupZoneK8sSecret(w, userID, s.kubeclient, s.roleBindingLister, oauth2Tokens); err != nil {
 		logger.Errorf("Couldn't create or update the oidc-authservice secret: %v", err)
 	}
 
@@ -418,12 +418,11 @@ func (s *server) getPassthroughToken(w http.ResponseWriter, r *http.Request) {
 	// Convert response body to JSON
 	decoder := json.NewDecoder(res.Body)
 	tokenResponse := struct {
-		AccessToken  string `json:"access_token"`
-		TokenType    string `json:"token_type"`
-		ExpiresIn    int64  `json:"expires_in"`
-		Scope        string `json:"scope"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresOn    int64  `json:"expires_on"` // Not actually in response body
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int64  `json:"expires_in"`
+		Scope       string `json:"scope"`
+		ExpiresOn   int64  `json:"expires_on"` // Not actually in response body
 	}{}
 	err = decoder.Decode(&tokenResponse)
 	if err != nil {

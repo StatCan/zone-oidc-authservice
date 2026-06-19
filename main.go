@@ -21,7 +21,9 @@ import (
 	"github.com/yosssi/boltstore/reaper"
 	"github.com/yosssi/boltstore/store"
 	"golang.org/x/oauth2"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	v1 "k8s.io/client-go/listers/rbac/v1"
 	clientconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
@@ -50,7 +52,8 @@ type server struct {
 	caBundle []byte
 
 	// ZONE: K8s client for creating k8s resources
-	kubeclient *kubernetes.Clientset
+	kubeclient        *kubernetes.Clientset
+	roleBindingLister v1.RoleBindingLister
 }
 
 type userIDOpts struct {
@@ -175,6 +178,13 @@ func main() {
 	restConfig, err := clientconfig.GetConfig()
 	kubeclient := kubernetes.NewForConfigOrDie(restConfig)
 
+	// Zone: setup a rolebinding lister to get namespaces from emails
+	informerFactory := informers.NewSharedInformerFactory(kubeclient, time.Minute*60)
+	roleBindingLister := informerFactory.Rbac().V1().RoleBindings().Lister()
+	stop := make(chan struct{})
+	informerFactory.Start(stop)
+	informerFactory.WaitForCacheSync(stop)
+
 	// Set the server values.
 	// The isReady atomic variable should protect it from concurrency issues.
 
@@ -199,6 +209,7 @@ func main() {
 		sessionMaxAgeSeconds: sessionMaxAgeSeconds,
 		caBundle:             caBundle,
 		kubeclient:           kubeclient,
+		roleBindingLister:    roleBindingLister,
 	}
 
 	// Setup complete, mark server ready

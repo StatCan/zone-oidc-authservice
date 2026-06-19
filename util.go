@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -22,7 +21,9 @@ import (
 	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
+	listerv1 "k8s.io/client-go/listers/rbac/v1"
 )
 
 func loggerForRequest(r *http.Request) *log.Entry {
@@ -143,27 +144,36 @@ func doRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
 	return client.Do(req.WithContext(ctx))
 }
 
-// Zone: Helper function to convert the userID(email) into a namespace value
-func getNamespaceFromEmail(email string) string {
-	namespaceName := ""
-
-	split_userID := strings.Split(email, "@")
-	if len(split_userID) > 0 {
-		username := split_userID[0]
-
-		// Remove any non-alphanumeric and non-underscore character from username
-		regexNonAlpha := regexp.MustCompile(`[^\w]|\.`)
-		regexNonAlphaResult := regexNonAlpha.ReplaceAllString(username, "-")
-
-		// Remove any leading or trailing underscores from username
-		regexTrail := regexp.MustCompile(`^-+|-+$|_`)
-		regexTrailResult := regexTrail.ReplaceAllString(regexNonAlphaResult, "")
-
-		// lower case the namespace value
-		namespaceName = strings.ToLower(regexTrailResult)
+// Zone: return the namespace that is associated with the given userID(email)
+// Uses a RoleBinding lister to match the userID to the namespace
+func getNamespaceFromRoleBindings(userID string, roleBindingLister listerv1.RoleBindingLister) (string, error) {
+	// List the role bindings in all namespaces
+	roleBindings, err := roleBindingLister.RoleBindings("").List(labels.Everything())
+	if err != nil {
+		return "", err
 	}
 
-	return namespaceName
+	namespace := ""
+	// for every roleBinding, check if the user annotation matches the given userID
+	for _, roleBinding := range roleBindings {
+		userVal, ok := roleBinding.Annotations["user"]
+		if !ok {
+			continue
+		}
+		if userID != "" && userID != userVal {
+			continue
+		}
+		// if the rolebinding that matches the userID is found, break out of the loop
+		namespace = roleBinding.Namespace
+		break
+	}
+
+	// return an error if no namespace was found
+	if namespace == "" {
+		return "", fmt.Errorf("The namespace could not be retrieved for userID %s", userID)
+	}
+
+	return namespace, nil
 }
 
 // Zone: Updates the K8s secret for the authenticated user's with their authservice session cookie value and the access token's expiry time.
@@ -213,10 +223,11 @@ func updateZoneSecret(kubeclient *kubernetes.Clientset, namespace string, tokenE
 // Zone: Gets the namespace of the requesting user
 // and the authservice session ID value from the cookies of the ResponseWriter.
 // Proceeds to create/update the user's authservice k8s secret.
-func setupZoneK8sSecret(w http.ResponseWriter, userID string, kubeclient *kubernetes.Clientset, oauth2Tokens *oauth2.Token) error {
-	// Get namespace from userID(which should be an email)
-	namespace := getNamespaceFromEmail(userID)
-	if namespace == "" {
+func setupZoneK8sSecret(w http.ResponseWriter, userID string, kubeclient *kubernetes.Clientset,
+	roleBindingLister listerv1.RoleBindingLister, oauth2Tokens *oauth2.Token) error {
+	// Get namespace value for userID(which should be an email) from the roleBindings
+	namespace, err := getNamespaceFromRoleBindings(userID, roleBindingLister)
+	if err != nil {
 		return fmt.Errorf("Couldn't get namespace for userID: %s. Skipping creating the K8s secret", userID)
 	}
 
